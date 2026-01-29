@@ -22,6 +22,8 @@ pub struct WasmUdfManager {
 /// Metadata for a loaded WASM module
 struct WasmModule {
     module: Module,
+    instance: Instance,
+    store: Store,
     exports: Vec<String>,
 }
 
@@ -126,8 +128,11 @@ impl WasmUdfManager {
     ) -> Result<(), Box<dyn std::error::Error>> {
         tracing::info!("Loading WASM module: {}", name);
 
+        // Create a new store for this module
+        let mut store = Store::default();
+
         // Compile the WASM module
-        let module = Module::new(&self.store, wasm_bytes)?;
+        let module = Module::new(&store, wasm_bytes)?;
 
         // Get exported functions
         let exports = module
@@ -136,7 +141,16 @@ impl WasmUdfManager {
             .map(|f| f.name().to_string())
             .collect();
 
-        let wasm_module = WasmModule { module, exports };
+        // Create an instance
+        let import_object = Imports::new();
+        let instance = Instance::new(&mut store, &module, &import_object)?;
+
+        let wasm_module = WasmModule {
+            module,
+            instance,
+            store,
+            exports
+        };
 
         let mut modules = self.modules.write().unwrap();
         modules.insert(name.to_string(), wasm_module);
@@ -231,6 +245,69 @@ impl WasmUdfManager {
         }
     }
 
+    /// Register a WASM function as a DataFusion UDF (supports multi-argument)
+    pub fn register_function(
+        &self,
+        ctx: &datafusion::execution::context::SessionContext,
+        module_name: &str,
+        wasm_func_name: &str,
+        udf_name: &str,
+    ) -> DataFusionResult<()> {
+        let modules = self.modules.read().unwrap();
+        let module = modules.get(module_name).ok_or_else(|| {
+            datafusion::error::DataFusionError::Execution(format!("Module '{}' not found", module_name))
+        })?;
+
+        // Get function signature
+        let sig = module.get_function_signature(wasm_func_name)?;
+
+        // Validate: all params must be same type, single return value
+        if sig.results.len() != 1 {
+            return Err(datafusion::error::DataFusionError::Execution(
+                format!("Function must return exactly 1 value, got {}", sig.results.len())
+            ));
+        }
+
+        if sig.params.is_empty() {
+            return Err(datafusion::error::DataFusionError::Execution(
+                "Function must have at least 1 parameter".to_string()
+            ));
+        }
+
+        // Check if all params are the same type
+        let first_param_type = sig.params[0];
+        if !sig.params.iter().all(|t| *t == first_param_type) {
+            return Err(datafusion::error::DataFusionError::Execution(
+                "All parameters must be the same type (homogeneous)".to_string()
+            ));
+        }
+
+        // Register based on type
+        match (first_param_type, sig.results[0]) {
+            (wasmer::Type::I64, wasmer::Type::I64) => {
+                self.register_i64_function_multi(
+                    ctx,
+                    module_name,
+                    wasm_func_name,
+                    udf_name,
+                    sig.params.len(),
+                )
+            }
+            (wasmer::Type::F64, wasmer::Type::F64) => {
+                self.register_f64_function_multi(
+                    ctx,
+                    module_name,
+                    wasm_func_name,
+                    udf_name,
+                    sig.params.len(),
+                )
+            }
+            _ => Err(datafusion::error::DataFusionError::Execution(
+                "Only i64->i64 and f64->f64 functions are supported".to_string()
+            )),
+        }
+    }
+
     /// Register a WASM function as a DataFusion UDF
     pub fn register_udf(
         &self,
@@ -239,139 +316,220 @@ impl WasmUdfManager {
     ) -> Result<(), Box<dyn std::error::Error>> {
         tracing::info!("Registering WASM UDF: {}", config.name);
 
-        // Create the UDF based on return type
-        match config.return_type {
-            WasmDataType::Int64 => {
-                self.register_i64_udf(ctx, config)?;
-            }
-            WasmDataType::Float64 => {
-                self.register_f64_udf(ctx, config)?;
-            }
-            WasmDataType::String => {
-                return Err("String return type not yet implemented for WASM UDFs".into());
-            }
-        }
+        // Use the new register_function method which auto-detects arity
+        self.register_function(
+            ctx,
+            &config.wasm_path,
+            &config.function_name,
+            &config.name,
+        ).map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
 
         Ok(())
     }
 
-    /// Register an i64-returning WASM UDF
-    fn register_i64_udf(
+    /// Register multi-argument i64 function
+    fn register_i64_function_multi(
         &self,
         ctx: &datafusion::execution::context::SessionContext,
-        config: WasmUdfConfig,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+        module_name: &str,
+        wasm_func_name: &str,
+        udf_name: &str,
+        arity: usize,
+    ) -> DataFusionResult<()> {
         let modules = self.modules.clone();
-        let wasm_path = config.wasm_path.clone();
-        let function_name = config.function_name.clone();
+        let module_name = module_name.to_string();
+        let wasm_func_name = wasm_func_name.to_string();
 
-        let func = make_scalar_function(move |args: &[ArrayRef]| {
-            // For now, assume single i64 argument
-            if args.len() != 1 {
+        let func = move |args: &[ArrayRef]| -> DataFusionResult<ArrayRef> {
+            if args.len() != arity {
                 return Err(datafusion::error::DataFusionError::Execution(
-                    format!("Expected 1 argument, got {}", args.len()),
+                    format!("Expected {} arguments, got {}", arity, args.len())
                 ));
             }
 
-            let arg_array = args[0]
-                .as_any()
-                .downcast_ref::<Int64Array>()
-                .ok_or_else(|| {
-                    datafusion::error::DataFusionError::Execution(
-                        "Expected Int64Array".to_string(),
-                    )
-                })?;
+            // Convert all arguments to Int64Array
+            let mut arg_arrays = Vec::new();
+            for arg in args {
+                let arr = arg.as_any()
+                    .downcast_ref::<Int64Array>()
+                    .ok_or_else(|| datafusion::error::DataFusionError::Execution(
+                        "Argument must be Int64".to_string()
+                    ))?;
+                arg_arrays.push(arr);
+            }
 
-            // Execute WASM function for each row
-            let results: Vec<Option<i64>> = (0..arg_array.len())
-                .map(|i| {
-                    if !arg_array.is_valid(i) {
-                        None
-                    } else {
-                        let val = arg_array.value(i);
-                        // TODO: Execute WASM function
-                        // For now, return the input (identity function)
-                        Some(val)
-                    }
-                })
-                .collect();
+            let num_rows = arg_arrays[0].len();
 
-            let result_array = Int64Array::from(results);
-            Ok(Arc::new(result_array) as ArrayRef)
-        });
+            // Process row by row
+            let mut results = Vec::with_capacity(num_rows);
+
+            for row_idx in 0..num_rows {
+                // Check for NULLs in any argument
+                let has_null = arg_arrays.iter()
+                    .any(|arr| !arr.is_valid(row_idx));
+
+                if has_null {
+                    results.push(None);
+                    continue;
+                }
+
+                // Collect values for this row
+                let values: Vec<i64> = arg_arrays.iter()
+                    .map(|arr| arr.value(row_idx))
+                    .collect();
+
+                // Call WASM function - need to create new instance each time
+                let modules_guard = modules.read().unwrap();
+                let wasm_module = modules_guard.get(&module_name)
+                    .ok_or_else(|| datafusion::error::DataFusionError::Execution(
+                        format!("Module '{}' not found", module_name)
+                    ))?;
+
+                // Create a new store and instance for this call
+                let mut store = Store::default();
+                let import_object = Imports::new();
+                let instance = Instance::new(&mut store, &wasm_module.module, &import_object)
+                    .map_err(|e| datafusion::error::DataFusionError::Execution(
+                        format!("Failed to create WASM instance: {}", e)
+                    ))?;
+
+                let func = instance.exports.get_function(&wasm_func_name)
+                    .map_err(|e| datafusion::error::DataFusionError::Execution(
+                        format!("Function '{}' not found: {}", wasm_func_name, e)
+                    ))?;
+
+                // Call with dynamic arity
+                let wasm_values: Vec<wasmer::Value> = values.iter()
+                    .map(|v| wasmer::Value::I64(*v))
+                    .collect();
+
+                let result = func.call(&mut store, &wasm_values)
+                    .map_err(|e| datafusion::error::DataFusionError::Execution(
+                        format!("WASM function call failed: {}", e)
+                    ))?;
+
+                let output = result[0].unwrap_i64();
+                results.push(Some(output));
+            }
+
+            Ok(Arc::new(Int64Array::from(results)))
+        };
+
+        // Create DataFusion signature with variable arity
+        let arg_types = vec![DataType::Int64; arity];
 
         let udf = create_udf(
-            &config.name,
-            vec![DataType::Int64],
+            udf_name,
+            arg_types,
             Arc::new(DataType::Int64),
             Volatility::Immutable,
-            func,
+            make_scalar_function(func),
         );
 
         ctx.register_udf(udf);
-
-        tracing::info!("Registered WASM UDF: {}", config.name);
+        tracing::info!("Registered {}-argument i64 WASM UDF: {}", arity, udf_name);
 
         Ok(())
     }
 
-    /// Register an f64-returning WASM UDF
-    fn register_f64_udf(
+    /// Register multi-argument f64 function
+    fn register_f64_function_multi(
         &self,
         ctx: &datafusion::execution::context::SessionContext,
-        config: WasmUdfConfig,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+        module_name: &str,
+        wasm_func_name: &str,
+        udf_name: &str,
+        arity: usize,
+    ) -> DataFusionResult<()> {
         let modules = self.modules.clone();
-        let wasm_path = config.wasm_path.clone();
-        let function_name = config.function_name.clone();
+        let module_name = module_name.to_string();
+        let wasm_func_name = wasm_func_name.to_string();
 
-        let func = make_scalar_function(move |args: &[ArrayRef]| {
-            if args.len() != 1 {
+        let func = move |args: &[ArrayRef]| -> DataFusionResult<ArrayRef> {
+            if args.len() != arity {
                 return Err(datafusion::error::DataFusionError::Execution(
-                    format!("Expected 1 argument, got {}", args.len()),
+                    format!("Expected {} arguments, got {}", arity, args.len())
                 ));
             }
 
-            let arg_array = args[0]
-                .as_any()
-                .downcast_ref::<Float64Array>()
-                .ok_or_else(|| {
-                    datafusion::error::DataFusionError::Execution(
-                        "Expected Float64Array".to_string(),
-                    )
-                })?;
+            let mut arg_arrays = Vec::new();
+            for arg in args {
+                let arr = arg.as_any()
+                    .downcast_ref::<Float64Array>()
+                    .ok_or_else(|| datafusion::error::DataFusionError::Execution(
+                        "Argument must be Float64".to_string()
+                    ))?;
+                arg_arrays.push(arr);
+            }
 
-            let results: Vec<Option<f64>> = (0..arg_array.len())
-                .map(|i| {
-                    if !arg_array.is_valid(i) {
-                        None
-                    } else {
-                        let val = arg_array.value(i);
-                        // TODO: Execute WASM function
-                        // For now, return square of input
-                        Some(val * val)
-                    }
-                })
-                .collect();
+            let num_rows = arg_arrays[0].len();
+            let mut results = Vec::with_capacity(num_rows);
 
-            let result_array = Float64Array::from(results);
-            Ok(Arc::new(result_array) as ArrayRef)
-        });
+            for row_idx in 0..num_rows {
+                let has_null = arg_arrays.iter()
+                    .any(|arr| !arr.is_valid(row_idx));
+
+                if has_null {
+                    results.push(None);
+                    continue;
+                }
+
+                let values: Vec<f64> = arg_arrays.iter()
+                    .map(|arr| arr.value(row_idx))
+                    .collect();
+
+                // Call WASM function - need to create new instance each time
+                let modules_guard = modules.read().unwrap();
+                let wasm_module = modules_guard.get(&module_name)
+                    .ok_or_else(|| datafusion::error::DataFusionError::Execution(
+                        format!("Module '{}' not found", module_name)
+                    ))?;
+
+                // Create a new store and instance for this call
+                let mut store = Store::default();
+                let import_object = Imports::new();
+                let instance = Instance::new(&mut store, &wasm_module.module, &import_object)
+                    .map_err(|e| datafusion::error::DataFusionError::Execution(
+                        format!("Failed to create WASM instance: {}", e)
+                    ))?;
+
+                let func = instance.exports.get_function(&wasm_func_name)
+                    .map_err(|e| datafusion::error::DataFusionError::Execution(
+                        format!("Function '{}' not found: {}", wasm_func_name, e)
+                    ))?;
+
+                let wasm_values: Vec<wasmer::Value> = values.iter()
+                    .map(|v| wasmer::Value::F64(*v))
+                    .collect();
+
+                let result = func.call(&mut store, &wasm_values)
+                    .map_err(|e| datafusion::error::DataFusionError::Execution(
+                        format!("WASM function call failed: {}", e)
+                    ))?;
+
+                let output = result[0].unwrap_f64();
+                results.push(Some(output));
+            }
+
+            Ok(Arc::new(Float64Array::from(results)))
+        };
+
+        let arg_types = vec![DataType::Float64; arity];
 
         let udf = create_udf(
-            &config.name,
-            vec![DataType::Float64],
+            udf_name,
+            arg_types,
             Arc::new(DataType::Float64),
             Volatility::Immutable,
-            func,
+            make_scalar_function(func),
         );
 
         ctx.register_udf(udf);
-
-        tracing::info!("Registered WASM UDF: {}", config.name);
+        tracing::info!("Registered {}-argument f64 WASM UDF: {}", arity, udf_name);
 
         Ok(())
     }
+
 }
 
 /// Global WASM UDF manager instance
@@ -430,6 +588,7 @@ pub fn load_and_register_wasm_udf(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use datafusion::prelude::SessionContext;
 
     #[test]
     fn test_wasm_manager_creation() {
@@ -481,5 +640,30 @@ mod tests {
         assert_eq!(sig.params[0], wasmer::Type::I64);
         assert_eq!(sig.params[1], wasmer::Type::I64);
         assert_eq!(sig.results[0], wasmer::Type::I64);
+    }
+
+    #[tokio::test]
+    async fn test_register_multi_arg_i64() {
+        let mut manager = WasmUdfManager::new();
+
+        let wasm_bytes = include_bytes!("../../test_data/add_two_i64.wasm");
+        manager.load_module("math", wasm_bytes).unwrap();
+
+        let ctx = SessionContext::new();
+
+        // This should auto-detect 2 arguments and register appropriately
+        manager.register_function(&ctx, "math", "add", "add_numbers")
+            .expect("Failed to register");
+
+        // Verify the UDF is registered
+        let df = ctx.sql("SELECT add_numbers(5, 10) AS result").await.unwrap();
+        let batches = df.collect().await.unwrap();
+
+        let result = batches[0].column(0)
+            .as_any()
+            .downcast_ref::<arrow::array::Int64Array>()
+            .unwrap();
+
+        assert_eq!(result.value(0), 15);
     }
 }
