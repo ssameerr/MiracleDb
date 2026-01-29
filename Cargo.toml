@@ -1,0 +1,244 @@
+[package]
+name = "miracledb"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Core Async Runtime
+tokio = { version = "1.40", features = ["full"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+futures = "0.3"
+async-trait = "0.1"
+async-recursion = "1.1"
+
+# Core Database Engine (SQL + Arrow)
+# Core Database Engine (SQL + Arrow)
+datafusion = "41.0.0"
+arrow = { version = "52.0.0", features = ["json", "prettyprint"] }
+parquet = "52.0.0"
+
+# Vector Storage & Search
+lance = "0.19.0"
+lance-index = "0.19.0"
+lance-linalg = "0.19.0"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+chrono = { version = "=0.4.38", features = ["serde"] }
+
+# API
+axum = { version = "0.7", features = ["ws", "macros", "multipart"] }
+tower-http = { version = "0.6", features = ["cors", "fs", "trace", "timeout"] }
+async-graphql = { version = "7.0", features = ["default"] }
+async-graphql-axum = "7.0"
+axum-server = { version = "0.7", features = ["tls-rustls"] }
+rustls = "0.23"
+
+# Pub/Sub
+crossbeam-channel = "0.5"
+dashmap = "6.1"
+
+# Distributed Compute
+tonic = "0.12"
+prost = "0.13"
+# ballista-core = "50.0.0" # Unavailable/Incompatible
+
+
+# Document formats
+apache-avro = "0.16"
+
+# Auth
+oauth2 = "4.4"
+
+# CRDT
+automerge = "0.5"
+
+# Sharding
+consistent_hash_ring = "0.8"
+
+# ML
+linfa = { version = "0.7", optional = true }
+linfa-bayes = { version = "0.7", optional = true }
+linfa-clustering = { version = "0.7", optional = true }
+smartcore = { version = "0.3.2", default-features = false, features = ["serde"], optional = true }
+ndarray = { version = "0.15", optional = true }
+ort = { version = "2.0.0-rc.11", optional = true, features = ["load-dynamic", "half"] }
+
+# Observability
+opentelemetry = "0.22"
+opentelemetry_sdk = { version = "0.22", features = ["rt-tokio"] }
+opentelemetry-otlp = "0.15"
+prometheus = "0.13"
+
+# Cloud
+aws-config = "1.1"
+aws-sdk-s3 = { version = "1.15", optional = true }
+google-cloud-storage = { version = "0.15", optional = true }
+azure_storage_blobs = "0.12"
+azure_storage = { version = "0.12", optional = true }
+
+# Data Adapters
+mysql = "24.0"
+postgres = "0.19"
+mongodb = "2.8"
+
+# NLP
+tokenizers = { version = "0.19", optional = true }
+candle-core = { version = "0.8.2", optional = true }
+candle-nn = "0.8.2"
+candle-transformers = "0.8.2"
+
+# Blockchain
+raft = "0.7"
+bellman = "0.14"
+
+# Cache
+redis = { version = "0.24", features = ["tokio-comp"] }
+
+# Protocols
+arrow-flight = "52.0.0"
+postgres-protocol = "0.6"
+
+# I18n
+icu = "1.4"
+chrono-tz = "0.9"
+
+# Import/Export
+polars = { version = "0.38", features = ["lazy", "parquet", "json", "csv"] }
+
+# Healthcare
+# fhir-sdk = "0.10"  # Temporarily disabled due to compilation issues
+
+# IoT
+rumqttd = "0.19"
+
+# Streaming & Event Processing
+rdkafka = { version = "0.36", features = ["cmake-build", "ssl", "sasl", "zstd"], optional = true }
+
+# Homomorphic Encryption
+concrete = "0.2"
+
+# API Docs
+utoipa = { version = "4.2", features = ["axum_extras", "uuid"] }
+utoipa-swagger-ui = { version = "6.0", features = ["axum"] }
+
+# --- Restored Dependencies ---
+
+# Full-Text Search / Logs
+tantivy = "0.22"
+
+# Multimedia / Object Store
+object_store = "0.10"
+image = "0.25"
+
+# WASM Runtime (Triggers & UDFs & Plugins)
+wasmer = "4.3"
+
+# Geospatial
+geo = { version = "0.31.0", features = ["serde"] }
+geo-types = { version = "0.7", features = ["serde"] }
+rstar = { version = "0.12", features = ["serde"] }
+# geoarrow = "0.1" (Placeholder/Future)
+
+# Graph Algorithms
+petgraph = "0.6"
+
+# Cryptography / Compliance
+ring = "0.17"
+aes-gcm = "0.10"
+chacha20poly1305 = "0.10"
+pqcrypto-kyber = { version = "0.7.3", optional = true }
+pqcrypto-dilithium = { version = "0.4.5", optional = true }
+pqcrypto-traits = { version = "0.3.5", optional = true }
+sha2 = "0.10"
+hmac = "0.12"
+crc32fast = "1.3"
+rand = "0.8"
+regex = "1.10"
+uuid = { version = "1.8", features = ["v4", "serde", "fast-rng"] }
+
+# Security (JWT)
+jsonwebtoken = "9.3"
+
+# System Metrics (Autonomous Ops)
+sysinfo = "0.31"
+
+# Nucleus State Management (ECS-like)
+slotmap = "1.0"
+
+# Caching
+lru = "0.12"
+
+# Compression
+zstd = "0.13"
+lz4 = "1.24"
+snap = "1.1"
+
+# API & Developer Tools
+clap = { version = "4.5", features = ["derive"] }
+rustyline = "14.0"
+rustyline-derive = "0.10"
+md5 = "0.7"
+base64 = "0.22"
+flate2 = "1.0"
+libloading = "0.8"
+hex = "0.4"
+blake3 = "1.5"
+serde_yaml = "0.9"
+
+# CPU detection for parallel processing
+num_cpus = "1.16"
+
+# Testing
+quickcheck = "1.0"
+
+# Import/Export (Legacy)
+csv = "1.3"
+toml = "0.8"
+
+# HTTP client for webhooks
+reqwest = { version = "0.12", features = ["json"] }
+bincode = "1.3"
+mimalloc = "0.1"
+tempfile = "3.24.0"
+sqlparser = { version = "0.43", features = ["visitor"] }
+lazy_static = "1.5.0"
+bytes = "1.0"
+
+# MiracleAuth - Post-Quantum Security Suite
+parking_lot = "0.12"
+bitflags = { version = "2.4", features = ["serde"] }
+
+[features]
+default = ["pqc", "ml", "cloud", "nlp"]
+pqc = ["pqcrypto-kyber", "pqcrypto-dilithium", "pqcrypto-traits"]
+ml = ["smartcore", "ndarray", "linfa", "linfa-bayes", "linfa-clustering", "ort"]
+kafka = ["rdkafka"]
+cloud = ["aws-sdk-s3", "azure_storage", "google-cloud-storage"]
+nlp = ["tokenizers", "candle-core"]
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[profile.release-small]
+inherits = "release"
+opt-level = "z"
+lto = true
+
+[dev-dependencies]
+tower = { version = "0.5.3", features = ["util"] }
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[build-dependencies]
+tonic-build = "0.12"
+
+[[bench]]
+name = "wasm_udf_bench"
+harness = false
