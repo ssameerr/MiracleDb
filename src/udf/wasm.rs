@@ -182,6 +182,21 @@ impl WasmUdfManager {
         modules.get(module_name).map(|m| m.exports.clone())
     }
 
+    /// Get function signature from a module
+    pub fn get_function_signature(
+        &self,
+        module_name: &str,
+        func_name: &str,
+    ) -> DataFusionResult<FunctionSignature> {
+        let modules = self.modules.read().unwrap();
+        let module = modules.get(module_name).ok_or_else(|| {
+            datafusion::error::DataFusionError::Execution(
+                format!("Module '{}' not found", module_name)
+            )
+        })?;
+        module.get_function_signature(func_name)
+    }
+
     /// Execute a WASM function with i64 inputs and i64 output
     pub fn call_i64(
         &mut self,
