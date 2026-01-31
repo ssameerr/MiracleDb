@@ -93,47 +93,61 @@ impl IntoResponse for ApiError {
 /// POST /api/v1/vector/index/create
 async fn create_index(
     State(state): State<VectorIndexState>,
-    Json(request): Json<CreateVectorIndexRequest>,
-) -> Result<(StatusCode, Json<CreateVectorIndexResponse>), ApiError> {
+    Json(req): Json<CreateVectorIndexRequest>,
+) -> Json<CreateVectorIndexResponse> {
     // Validate input
-    if request.table_name.is_empty() {
-        return Err(ApiError::BadRequest("Table name cannot be empty".to_string()));
+    if req.table_name.is_empty() {
+        return Json(CreateVectorIndexResponse {
+            success: false,
+            message: "Failed to create vector index".to_string(),
+            error: Some("Table name cannot be empty".to_string()),
+        });
     }
-    if request.column.is_empty() {
-        return Err(ApiError::BadRequest("Column name cannot be empty".to_string()));
+    if req.column.is_empty() {
+        return Json(CreateVectorIndexResponse {
+            success: false,
+            message: "Failed to create vector index".to_string(),
+            error: Some("Column name cannot be empty".to_string()),
+        });
     }
 
     // Check if dataset exists
-    if !state.vector_manager.dataset_exists(&request.table_name).await {
-        return Err(ApiError::NotFound(format!(
-            "Table '{}' does not exist",
-            request.table_name
-        )));
+    if !state.vector_manager.dataset_exists(&req.table_name).await {
+        return Json(CreateVectorIndexResponse {
+            success: false,
+            message: "Failed to create vector index".to_string(),
+            error: Some(format!("Table '{}' does not exist", req.table_name)),
+        });
     }
 
     // Create the index
-    state
+    match state
         .vector_manager
-        .create_index(&request.table_name, &request.column, request.config.clone())
+        .create_index(&req.table_name, &req.column, req.config.clone())
         .await
-        .map_err(|e| ApiError::InternalError(format!("Failed to create index: {}", e)))?;
+    {
+        Ok(_) => {
+            tracing::info!(
+                "Created vector index on {}.{}",
+                req.table_name,
+                req.column
+            );
 
-    tracing::info!(
-        "Created vector index on {}.{}",
-        request.table_name,
-        request.column
-    );
-
-    let response = CreateVectorIndexResponse {
-        success: true,
-        message: format!(
-            "Vector index created on {}.{}",
-            request.table_name, request.column
-        ),
-        error: None,
-    };
-
-    Ok((StatusCode::CREATED, Json(response)))
+            Json(CreateVectorIndexResponse {
+                success: true,
+                message: format!(
+                    "Vector index created on {}.{}",
+                    req.table_name, req.column
+                ),
+                error: None,
+            })
+        }
+        Err(e) => Json(CreateVectorIndexResponse {
+            success: false,
+            message: "Failed to create vector index".to_string(),
+            error: Some(e.to_string()),
+        }),
+    }
 }
 
 /// Get statistics for a table
@@ -274,12 +288,9 @@ mod tests {
         };
 
         // Execute
-        let result = create_index(State(state), Json(request)).await;
+        let response = create_index(State(state), Json(request)).await;
 
-        // Assert
-        assert!(result.is_ok());
-        let (status, response) = result.unwrap();
-        assert_eq!(status, StatusCode::CREATED);
+        // Assert - graceful success response
         assert_eq!(response.success, true);
         assert!(response.message.contains(table_name));
         assert!(response.message.contains("embedding"));
@@ -303,16 +314,13 @@ mod tests {
         };
 
         // Execute
-        let result = create_index(State(state), Json(request)).await;
+        let response = create_index(State(state), Json(request)).await;
 
-        // Assert
-        assert!(result.is_err());
-        match result {
-            Err(ApiError::BadRequest(msg)) => {
-                assert!(msg.contains("Table name cannot be empty"));
-            }
-            _ => panic!("Expected BadRequest error"),
-        }
+        // Assert - graceful error response with success: false
+        assert_eq!(response.success, false);
+        assert_eq!(response.message, "Failed to create vector index");
+        assert!(response.error.is_some());
+        assert!(response.error.unwrap().contains("Table name cannot be empty"));
     }
 
     #[tokio::test]
@@ -332,16 +340,13 @@ mod tests {
         };
 
         // Execute
-        let result = create_index(State(state), Json(request)).await;
+        let response = create_index(State(state), Json(request)).await;
 
-        // Assert
-        assert!(result.is_err());
-        match result {
-            Err(ApiError::BadRequest(msg)) => {
-                assert!(msg.contains("Column name cannot be empty"));
-            }
-            _ => panic!("Expected BadRequest error"),
-        }
+        // Assert - graceful error response with success: false
+        assert_eq!(response.success, false);
+        assert_eq!(response.message, "Failed to create vector index");
+        assert!(response.error.is_some());
+        assert!(response.error.unwrap().contains("Column name cannot be empty"));
     }
 
     #[tokio::test]
@@ -361,16 +366,13 @@ mod tests {
         };
 
         // Execute
-        let result = create_index(State(state), Json(request)).await;
+        let response = create_index(State(state), Json(request)).await;
 
-        // Assert
-        assert!(result.is_err());
-        match result {
-            Err(ApiError::NotFound(msg)) => {
-                assert!(msg.contains("does not exist"));
-            }
-            _ => panic!("Expected NotFound error"),
-        }
+        // Assert - graceful error response with success: false
+        assert_eq!(response.success, false);
+        assert_eq!(response.message, "Failed to create vector index");
+        assert!(response.error.is_some());
+        assert!(response.error.unwrap().contains("does not exist"));
     }
 
     #[tokio::test]
@@ -480,13 +482,11 @@ mod tests {
         };
 
         // Execute
-        let result = create_index(State(state), Json(request)).await;
+        let response = create_index(State(state), Json(request)).await;
 
-        // Assert
-        assert!(result.is_ok());
-        let (status, response) = result.unwrap();
-        assert_eq!(status, StatusCode::CREATED);
+        // Assert - graceful success response
         assert_eq!(response.success, true);
         assert!(response.message.contains("created"));
+        assert_eq!(response.error, None);
     }
 }
