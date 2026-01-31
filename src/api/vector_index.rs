@@ -31,29 +31,28 @@ impl VectorIndexState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateVectorIndexRequest {
     /// Name of the table/dataset
-    pub table: String,
+    pub table_name: String,
     /// Name of the vector column to index
     pub column: String,
-    /// Optional index configuration
-    #[serde(default)]
+    /// Index configuration (flattened into request body)
+    #[serde(flatten)]
     pub config: VectorIndexConfig,
 }
 
-/// Response for successful index creation
+/// Response for index creation
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CreateVectorIndexResponse {
-    pub status: String,
+    pub success: bool,
     pub message: String,
-    pub table: String,
-    pub column: String,
+    pub error: Option<String>,
 }
 
 /// Response for index statistics
 #[derive(Debug, Serialize, Deserialize)]
-pub struct VectorIndexStatsResponse {
-    pub table: String,
-    pub row_count: usize,
-    pub version: u64,
+pub struct IndexStatsResponse {
+    pub exists: bool,
+    pub row_count: Option<usize>,
+    pub version: Option<u64>,
 }
 
 /// Error response format
@@ -96,7 +95,7 @@ async fn create_index(
     Json(request): Json<CreateVectorIndexRequest>,
 ) -> Result<(StatusCode, Json<CreateVectorIndexResponse>), ApiError> {
     // Validate input
-    if request.table.is_empty() {
+    if request.table_name.is_empty() {
         return Err(ApiError::BadRequest("Table name cannot be empty".to_string()));
     }
     if request.column.is_empty() {
@@ -104,34 +103,33 @@ async fn create_index(
     }
 
     // Check if dataset exists
-    if !state.vector_manager.dataset_exists(&request.table).await {
+    if !state.vector_manager.dataset_exists(&request.table_name).await {
         return Err(ApiError::NotFound(format!(
             "Table '{}' does not exist",
-            request.table
+            request.table_name
         )));
     }
 
     // Create the index
     state
         .vector_manager
-        .create_index(&request.table, &request.column, request.config.clone())
+        .create_index(&request.table_name, &request.column, request.config.clone())
         .await
         .map_err(|e| ApiError::InternalError(format!("Failed to create index: {}", e)))?;
 
     tracing::info!(
         "Created vector index on {}.{}",
-        request.table,
+        request.table_name,
         request.column
     );
 
     let response = CreateVectorIndexResponse {
-        status: "success".to_string(),
+        success: true,
         message: format!(
             "Vector index created on {}.{}",
-            request.table, request.column
+            request.table_name, request.column
         ),
-        table: request.table,
-        column: request.column,
+        error: None,
     };
 
     Ok((StatusCode::CREATED, Json(response)))
@@ -140,17 +138,19 @@ async fn create_index(
 /// Get statistics for a table
 ///
 /// GET /api/v1/vector/index/stats/:table
-async fn get_stats(
+async fn get_index_stats(
     State(state): State<VectorIndexState>,
     Path(table): Path<String>,
-) -> Result<Json<VectorIndexStatsResponse>, ApiError> {
+) -> Result<Json<IndexStatsResponse>, ApiError> {
     // Validate input
     if table.is_empty() {
         return Err(ApiError::BadRequest("Table name cannot be empty".to_string()));
     }
 
     // Check if dataset exists
-    if !state.vector_manager.dataset_exists(&table).await {
+    let exists = state.vector_manager.dataset_exists(&table).await;
+
+    if !exists {
         return Err(ApiError::NotFound(format!("Table '{}' does not exist", table)));
     }
 
@@ -161,10 +161,10 @@ async fn get_stats(
         .await
         .map_err(|e| ApiError::InternalError(format!("Failed to get stats: {}", e)))?;
 
-    let response = VectorIndexStatsResponse {
-        table,
-        row_count: stats.row_count,
-        version: stats.version,
+    let response = IndexStatsResponse {
+        exists: true,
+        row_count: Some(stats.row_count),
+        version: Some(stats.version),
     };
 
     Ok(Json(response))
@@ -174,7 +174,7 @@ async fn get_stats(
 pub fn routes(state: VectorIndexState) -> Router {
     Router::new()
         .route("/create", post(create_index))
-        .route("/stats/:table", get(get_stats))
+        .route("/stats/:table", get(get_index_stats))
         .with_state(state)
 }
 
@@ -262,7 +262,7 @@ mod tests {
 
         // Create request
         let request = CreateVectorIndexRequest {
-            table: table_name.to_string(),
+            table_name: table_name.to_string(),
             column: "embedding".to_string(),
             config: VectorIndexConfig::default(),
         };
@@ -274,9 +274,10 @@ mod tests {
         assert!(result.is_ok());
         let (status, response) = result.unwrap();
         assert_eq!(status, StatusCode::CREATED);
-        assert_eq!(response.status, "success");
-        assert_eq!(response.table, table_name);
-        assert_eq!(response.column, "embedding");
+        assert_eq!(response.success, true);
+        assert!(response.message.contains(table_name));
+        assert!(response.message.contains("embedding"));
+        assert_eq!(response.error, None);
     }
 
     #[tokio::test]
@@ -290,7 +291,7 @@ mod tests {
 
         // Create request with empty table name
         let request = CreateVectorIndexRequest {
-            table: "".to_string(),
+            table_name: "".to_string(),
             column: "embedding".to_string(),
             config: VectorIndexConfig::default(),
         };
@@ -319,7 +320,7 @@ mod tests {
 
         // Create request with empty column name
         let request = CreateVectorIndexRequest {
-            table: "test_table".to_string(),
+            table_name: "test_table".to_string(),
             column: "".to_string(),
             config: VectorIndexConfig::default(),
         };
@@ -348,7 +349,7 @@ mod tests {
 
         // Create request for non-existent table
         let request = CreateVectorIndexRequest {
-            table: "nonexistent_table".to_string(),
+            table_name: "nonexistent_table".to_string(),
             column: "embedding".to_string(),
             config: VectorIndexConfig::default(),
         };
@@ -367,7 +368,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_stats_success() {
+    async fn test_get_index_stats_success() {
         // Setup
         let temp_dir = TempDir::new().unwrap();
         let base_path = temp_dir.path().to_str().unwrap();
@@ -383,18 +384,19 @@ mod tests {
         let state = VectorIndexState::new(vector_manager);
 
         // Execute
-        let result = get_stats(State(state), Path(table_name.to_string())).await;
+        let result = get_index_stats(State(state), Path(table_name.to_string())).await;
 
         // Assert
         assert!(result.is_ok());
         let response = result.unwrap();
-        assert_eq!(response.table, table_name);
-        assert_eq!(response.row_count, 3);
-        assert!(response.version > 0);
+        assert_eq!(response.exists, true);
+        assert_eq!(response.row_count, Some(3));
+        assert!(response.version.is_some());
+        assert!(response.version.unwrap() > 0);
     }
 
     #[tokio::test]
-    async fn test_get_stats_empty_table_name() {
+    async fn test_get_index_stats_empty_table_name() {
         // Setup
         let temp_dir = TempDir::new().unwrap();
         let base_path = temp_dir.path().to_str().unwrap();
@@ -403,7 +405,7 @@ mod tests {
         let state = VectorIndexState::new(vector_manager);
 
         // Execute with empty table name
-        let result = get_stats(State(state), Path("".to_string())).await;
+        let result = get_index_stats(State(state), Path("".to_string())).await;
 
         // Assert
         assert!(result.is_err());
@@ -416,7 +418,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_stats_table_not_found() {
+    async fn test_get_index_stats_table_not_found() {
         // Setup
         let temp_dir = TempDir::new().unwrap();
         let base_path = temp_dir.path().to_str().unwrap();
@@ -425,7 +427,7 @@ mod tests {
         let state = VectorIndexState::new(vector_manager);
 
         // Execute with non-existent table
-        let result = get_stats(State(state), Path("nonexistent_table".to_string())).await;
+        let result = get_index_stats(State(state), Path("nonexistent_table".to_string())).await;
 
         // Assert
         assert!(result.is_err());
@@ -468,7 +470,7 @@ mod tests {
 
         // Create request with custom config
         let request = CreateVectorIndexRequest {
-            table: table_name.to_string(),
+            table_name: table_name.to_string(),
             column: "embedding".to_string(),
             config: VectorIndexConfig {
                 metric_type: "Cosine".to_string(),
@@ -485,6 +487,7 @@ mod tests {
         assert!(result.is_ok());
         let (status, response) = result.unwrap();
         assert_eq!(status, StatusCode::CREATED);
-        assert_eq!(response.status, "success");
+        assert_eq!(response.success, true);
+        assert!(response.message.contains("created"));
     }
 }
