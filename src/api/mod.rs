@@ -19,6 +19,7 @@ pub mod onnx;
 #[cfg(feature = "nlp")]
 pub mod ml;
 pub mod spatial;
+pub mod backup;
 
 use std::sync::Arc;
 use axum::{Router, routing::{get, post}, Extension};
@@ -39,6 +40,7 @@ pub fn router(
     rlm_agent: Arc<crate::rlm::RecursiveAgent>,
     security_mgr: Arc<crate::security::SecurityManager>,
     log_engine: Option<Arc<LogEngine>>,
+    backup_api_state: Option<backup::BackupApiState>,
 ) -> Router {
     let rate_limiter = Arc::new(middleware::RateLimiter::new(100, 60)); // 100 req per minute
     let dashboard_state = Arc::new(dashboard::DashboardState::new());
@@ -77,6 +79,11 @@ pub fn router(
     #[cfg(feature = "nlp")]
     {
         app = app.nest("/api/v1/ml", ml::routes(engine.clone()));
+    }
+
+    // Backup & Recovery API (conditional)
+    if let Some(backup_state) = backup_api_state {
+        app = app.nest("/api/v1", backup::routes(backup_state));
     }
 
     app
