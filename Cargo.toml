@@ -242,3 +242,7 @@ tonic-build = "0.12"
 [[bench]]
 name = "wasm_udf_bench"
 harness = false
+
+[[bench]]
+name = "search_performance"
+harness = false
