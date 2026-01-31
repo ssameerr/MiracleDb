@@ -16,6 +16,9 @@ pub mod auto;
 pub mod udf;
 #[cfg(feature = "ml")]
 pub mod onnx;
+#[cfg(feature = "nlp")]
+pub mod ml;
+pub mod spatial;
 
 use std::sync::Arc;
 use axum::{Router, routing::{get, post}, Extension};
@@ -51,7 +54,7 @@ pub fn router(
         }
     });
 
-    Router::new()
+    let mut app = Router::new()
         // Health check (Public, no rate limit?) - actually usually good to rate limit too, but skip auth
         .route("/health", get(health_check))
 
@@ -61,12 +64,22 @@ pub fn router(
         // REST API
         .nest("/api/v1", rest::routes())
 
+        // Spatial Index API
+        .nest("/api/v1/spatial", spatial::routes())
+
         // Auto-Generated Table APIs (separate namespace to avoid conflicts)
         .nest("/api/v1/auto", auto_router)
 
         // WASM UDF Management
-        .nest("/api/v1/udf", udf::udf_router(engine.clone()))
+        .nest("/api/v1/udf", udf::udf_router(engine.clone()));
 
+    // ML Model Management (conditional)
+    #[cfg(feature = "nlp")]
+    {
+        app = app.nest("/api/v1/ml", ml::routes(engine.clone()));
+    }
+
+    app
         // Documentation
         .route("/api/docs/openapi.json", get(docs_api::openapi_json))
         .route("/api/docs", get(docs_api::swagger_ui))
@@ -100,11 +113,16 @@ pub fn router(
         
         // Nucleus Reactive Data API
         .nest("/nucleus", nucleus::routes(nucleus_system))
-        .layer(axum::middleware::from_fn(middleware::auth_middleware)) 
-        
-        // Rate Limit Layer (Applied to all above)
+        .layer(axum::middleware::from_fn(middleware::auth_middleware))
+
+        // Timeout Layer (30s per request - prevents runaway queries)
+        .layer(axum::middleware::from_fn(middleware::timeout_middleware))
+
         // Rate Limit Layer (Applied to all above)
         .layer(axum::middleware::from_fn(middleware::rate_limit_middleware))
+
+        // Request ID tracking (for debugging and audit)
+        .layer(axum::middleware::from_fn(middleware::request_id_middleware))
         
         // Metrics (Public)
         .route("/metrics", get(metrics_handler))
