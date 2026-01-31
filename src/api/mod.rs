@@ -21,6 +21,7 @@ pub mod ml;
 pub mod spatial;
 pub mod backup;
 pub mod vector_index;
+pub mod fulltext_index;
 
 use std::sync::Arc;
 use axum::{Router, routing::{get, post}, Extension};
@@ -32,6 +33,7 @@ use crate::engine::MiracleEngine;
 use crate::nucleus::NucleusSystem;
 use crate::logs::LogEngine;
 use crate::vector::VectorIndexManager;
+use crate::fulltext::FullTextIndexManager;
 
 /// Create the main API router
 pub fn router(
@@ -44,6 +46,7 @@ pub fn router(
     log_engine: Option<Arc<LogEngine>>,
     backup_api_state: Option<backup::BackupApiState>,
     vector_manager: Arc<VectorIndexManager>,
+    fulltext_manager: Arc<FullTextIndexManager>,
 ) -> Router {
     let rate_limiter = Arc::new(middleware::RateLimiter::new(100, 60)); // 100 req per minute
     let dashboard_state = Arc::new(dashboard::DashboardState::new());
@@ -92,6 +95,10 @@ pub fn router(
     // Vector Index Management API
     let vector_state = vector_index::VectorIndexState::new(vector_manager);
     app = app.nest("/api/v1/vector/index", vector_index::routes(vector_state));
+
+    // Full-Text Index Management API
+    let fulltext_state = fulltext_index::FullTextIndexState::new(fulltext_manager);
+    app = app.nest("/api/v1/fulltext/index", fulltext_index::routes(fulltext_state));
 
     app
         // Documentation
