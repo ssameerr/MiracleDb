@@ -477,6 +477,10 @@ async fn start_server(port: u16) -> Result<(), Box<dyn std::error::Error>> {
 
     info!("Backup & Recovery System initialized.");
 
+    // 4.6 Initialize Vector Index Manager
+    let vector_manager = std::sync::Arc::new(vector::VectorIndexManager::new(data_dir));
+    info!("Vector Index Manager initialized.");
+
     // Register Prometheus metrics
     if let Err(e) = observability::metrics::MetricsCollector::register_default_metrics() {
         info!("Metrics already registered: {}", e);
@@ -493,6 +497,7 @@ async fn start_server(port: u16) -> Result<(), Box<dyn std::error::Error>> {
         std::sync::Arc::new(security_mgr),
         log_engine,
         Some(backup_api_state),
+        vector_manager,
     );
     
     // 5. Start Server with TLS (if configured)

@@ -20,6 +20,7 @@ pub mod onnx;
 pub mod ml;
 pub mod spatial;
 pub mod backup;
+pub mod vector_index;
 
 use std::sync::Arc;
 use axum::{Router, routing::{get, post}, Extension};
@@ -30,6 +31,7 @@ use crate::graph::GraphDb;
 use crate::engine::MiracleEngine;
 use crate::nucleus::NucleusSystem;
 use crate::logs::LogEngine;
+use crate::vector::VectorIndexManager;
 
 /// Create the main API router
 pub fn router(
@@ -41,6 +43,7 @@ pub fn router(
     security_mgr: Arc<crate::security::SecurityManager>,
     log_engine: Option<Arc<LogEngine>>,
     backup_api_state: Option<backup::BackupApiState>,
+    vector_manager: Arc<VectorIndexManager>,
 ) -> Router {
     let rate_limiter = Arc::new(middleware::RateLimiter::new(100, 60)); // 100 req per minute
     let dashboard_state = Arc::new(dashboard::DashboardState::new());
@@ -85,6 +88,10 @@ pub fn router(
     if let Some(backup_state) = backup_api_state {
         app = app.nest("/api/v1", backup::routes(backup_state));
     }
+
+    // Vector Index Management API
+    let vector_state = vector_index::VectorIndexState::new(vector_manager);
+    app = app.nest("/api/v1/vector/index", vector_index::routes(vector_state));
 
     app
         // Documentation
