@@ -50,6 +50,7 @@ pub struct CreateVectorIndexResponse {
 /// Response for index statistics
 #[derive(Debug, Serialize, Deserialize)]
 pub struct IndexStatsResponse {
+    pub table_name: String,
     pub exists: bool,
     pub row_count: Option<usize>,
     pub version: Option<u64>,
@@ -140,34 +141,39 @@ async fn create_index(
 /// GET /api/v1/vector/index/stats/:table
 async fn get_index_stats(
     State(state): State<VectorIndexState>,
-    Path(table): Path<String>,
-) -> Result<Json<IndexStatsResponse>, ApiError> {
-    // Validate input
-    if table.is_empty() {
-        return Err(ApiError::BadRequest("Table name cannot be empty".to_string()));
-    }
-
+    Path(table_name): Path<String>,
+) -> Json<IndexStatsResponse> {
     // Check if dataset exists
-    let exists = state.vector_manager.dataset_exists(&table).await;
+    let exists = state.vector_manager.dataset_exists(&table_name).await;
 
     if !exists {
-        return Err(ApiError::NotFound(format!("Table '{}' does not exist", table)));
+        // Return graceful response with exists: false
+        return Json(IndexStatsResponse {
+            table_name,
+            exists: false,
+            row_count: None,
+            version: None,
+        });
     }
 
     // Get statistics
-    let stats = state
-        .vector_manager
-        .get_stats(&table)
-        .await
-        .map_err(|e| ApiError::InternalError(format!("Failed to get stats: {}", e)))?;
-
-    let response = IndexStatsResponse {
-        exists: true,
-        row_count: Some(stats.row_count),
-        version: Some(stats.version),
-    };
-
-    Ok(Json(response))
+    match state.vector_manager.get_stats(&table_name).await {
+        Ok(stats) => Json(IndexStatsResponse {
+            table_name,
+            exists: true,
+            row_count: Some(stats.row_count),
+            version: Some(stats.version),
+        }),
+        Err(_) => {
+            // If stats retrieval fails, return exists but no data
+            Json(IndexStatsResponse {
+                table_name,
+                exists: true,
+                row_count: None,
+                version: None,
+            })
+        }
+    }
 }
 
 /// Create the router for vector index endpoints
@@ -384,11 +390,10 @@ mod tests {
         let state = VectorIndexState::new(vector_manager);
 
         // Execute
-        let result = get_index_stats(State(state), Path(table_name.to_string())).await;
+        let response = get_index_stats(State(state), Path(table_name.to_string())).await;
 
         // Assert
-        assert!(result.is_ok());
-        let response = result.unwrap();
+        assert_eq!(response.table_name, table_name);
         assert_eq!(response.exists, true);
         assert_eq!(response.row_count, Some(3));
         assert!(response.version.is_some());
@@ -404,17 +409,14 @@ mod tests {
         let vector_manager = Arc::new(VectorIndexManager::new(base_path));
         let state = VectorIndexState::new(vector_manager);
 
-        // Execute with empty table name
-        let result = get_index_stats(State(state), Path("".to_string())).await;
+        // Execute with empty table name - should return gracefully with exists: false
+        let response = get_index_stats(State(state), Path("".to_string())).await;
 
-        // Assert
-        assert!(result.is_err());
-        match result {
-            Err(ApiError::BadRequest(msg)) => {
-                assert!(msg.contains("Table name cannot be empty"));
-            }
-            _ => panic!("Expected BadRequest error"),
-        }
+        // Assert - empty table name returns graceful response
+        assert_eq!(response.table_name, "");
+        assert_eq!(response.exists, false);
+        assert_eq!(response.row_count, None);
+        assert_eq!(response.version, None);
     }
 
     #[tokio::test]
@@ -427,16 +429,13 @@ mod tests {
         let state = VectorIndexState::new(vector_manager);
 
         // Execute with non-existent table
-        let result = get_index_stats(State(state), Path("nonexistent_table".to_string())).await;
+        let response = get_index_stats(State(state), Path("nonexistent_table".to_string())).await;
 
-        // Assert
-        assert!(result.is_err());
-        match result {
-            Err(ApiError::NotFound(msg)) => {
-                assert!(msg.contains("does not exist"));
-            }
-            _ => panic!("Expected NotFound error"),
-        }
+        // Assert - non-existent table returns graceful response with exists: false
+        assert_eq!(response.table_name, "nonexistent_table");
+        assert_eq!(response.exists, false);
+        assert_eq!(response.row_count, None);
+        assert_eq!(response.version, None);
     }
 
     #[tokio::test]
