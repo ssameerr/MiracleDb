@@ -6,12 +6,13 @@ use std::sync::Arc;
 use datafusion::logical_expr::{ScalarUDF, Volatility, create_udf};
 // TODO: Migrate from deprecated make_scalar_function to ScalarUDFImpl trait (DataFusion 41.0.0+)
 use datafusion::physical_plan::functions::make_scalar_function;
-use datafusion::arrow::array::{ArrayRef, Float64Array, Array};
+use datafusion::arrow::array::{ArrayRef, Float64Array, BooleanArray, Array};
 use datafusion::arrow::datatypes::DataType;
 use datafusion::common::Result;
 use geo::{
     Distance,     // Replaces deprecated EuclideanDistance trait
     Euclidean,    // Distance metric for Euclidean distance calculation
+    Contains,     // Trait for containment checks
     Geometry,
 };
 
@@ -19,8 +20,10 @@ use geo::{
 pub fn register_geo_functions(ctx: &datafusion::execution::context::SessionContext) {
     // Task 1: ST_Distance (WKT-based)
     ctx.register_udf(create_st_distance_udf());
+    // Task 2: ST_Contains (WKT-based)
+    ctx.register_udf(create_st_contains_udf());
 
-    tracing::info!("Registered 1 geospatial function");
+    tracing::info!("Registered 2 geospatial functions: ST_Distance, ST_Contains");
 }
 
 // ============================================================================
@@ -113,5 +116,72 @@ fn st_distance_udf_impl(args: &[ArrayRef]) -> Result<ArrayRef> {
     }
 
     Ok(Arc::new(Float64Array::from(result)))
+}
+
+// ============================================================================
+// Task 2: ST_Contains Function
+// ============================================================================
+
+/// ST_Contains(geometry1_wkt, geometry2_wkt) -> BOOLEAN
+/// Check if geometry1 completely contains geometry2 (PostGIS-compatible)
+fn create_st_contains_udf() -> ScalarUDF {
+    // TODO: Migrate from deprecated make_scalar_function to ScalarUDFImpl trait (DataFusion 41.0.0+)
+    create_udf(
+        "ST_Contains",
+        vec![DataType::Utf8, DataType::Utf8],
+        Arc::new(DataType::Boolean),
+        Volatility::Immutable,
+        make_scalar_function(st_contains_udf_impl),
+    )
+}
+
+fn st_contains_udf_impl(args: &[ArrayRef]) -> Result<ArrayRef> {
+    if args.len() != 2 {
+        return Err(datafusion::error::DataFusionError::Execution(
+            "ST_Contains requires exactly 2 arguments".to_string()
+        ));
+    }
+
+    let geom1_array = datafusion::common::cast::as_string_array(&args[0])?;
+    let geom2_array = datafusion::common::cast::as_string_array(&args[1])?;
+
+    let len = geom1_array.len();
+    let mut result = Vec::with_capacity(len);
+
+    for i in 0..len {
+        // Handle NULL values
+        if geom1_array.is_null(i) || geom2_array.is_null(i) {
+            result.push(None);
+            continue;
+        }
+
+        let wkt1 = geom1_array.value(i);
+        let wkt2 = geom2_array.value(i);
+
+        // Parse WKT strings to geometries
+        let geom1 = match parse_wkt(wkt1) {
+            Ok(g) => g,
+            Err(e) => {
+                return Err(datafusion::error::DataFusionError::Execution(
+                    format!("Failed to parse geometry 1: {}", e)
+                ));
+            }
+        };
+
+        let geom2 = match parse_wkt(wkt2) {
+            Ok(g) => g,
+            Err(e) => {
+                return Err(datafusion::error::DataFusionError::Execution(
+                    format!("Failed to parse geometry 2: {}", e)
+                ));
+            }
+        };
+
+        // Check containment using geo::Contains trait
+        let contains = geom1.contains(&geom2);
+        result.push(Some(contains));
+    }
+
+    Ok(Arc::new(BooleanArray::from(result)))
 }
 
