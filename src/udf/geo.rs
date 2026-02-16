@@ -4,12 +4,14 @@
 
 use std::sync::Arc;
 use datafusion::logical_expr::{ScalarUDF, Volatility, create_udf};
+// TODO: Migrate from deprecated make_scalar_function to ScalarUDFImpl trait (DataFusion 41.0.0+)
 use datafusion::physical_plan::functions::make_scalar_function;
-use datafusion::arrow::array::{ArrayRef, Float64Array};
+use datafusion::arrow::array::{ArrayRef, Float64Array, Array};
 use datafusion::arrow::datatypes::DataType;
 use datafusion::common::Result;
 use geo::{
-    EuclideanDistance,
+    Distance,     // Replaces deprecated EuclideanDistance trait
+    Euclidean,    // Distance metric for Euclidean distance calculation
     Geometry,
 };
 
@@ -27,6 +29,15 @@ pub fn register_geo_functions(ctx: &datafusion::execution::context::SessionConte
 
 /// Parse WKT string into geo::Geometry
 fn parse_wkt(wkt_str: &str) -> Result<Geometry<f64>> {
+    // Optional: Input validation to prevent DoS attacks
+    const MAX_WKT_LENGTH: usize = 1_000_000; // 1MB limit
+
+    if wkt_str.len() > MAX_WKT_LENGTH {
+        return Err(datafusion::error::DataFusionError::Execution(
+            format!("WKT string exceeds maximum length of {} bytes", MAX_WKT_LENGTH)
+        ));
+    }
+
     // Parse WKT string using the wkt crate
     use wkt::TryFromWkt;
 
@@ -96,8 +107,8 @@ fn st_distance_udf_impl(args: &[ArrayRef]) -> Result<ArrayRef> {
             }
         };
 
-        // Calculate Euclidean distance
-        let distance = geom1.euclidean_distance(&geom2);
+        // Calculate Euclidean distance using new Distance trait API
+        let distance = Euclidean.distance(&geom1, &geom2);
         result.push(Some(distance));
     }
 
