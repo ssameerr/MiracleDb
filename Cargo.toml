@@ -141,6 +141,7 @@ wasmer = "4.3"
 geo = { version = "0.31.0", features = ["serde"] }
 geo-types = { version = "0.7", features = ["serde"] }
 rstar = { version = "0.12", features = ["serde"] }
+wkt = "0.10"
 # geoarrow = "0.1" (Placeholder/Future)
 
 # Graph Algorithms
