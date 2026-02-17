@@ -1,4 +1,4 @@
-use datafusion::arrow::array::{Array, ArrayRef, Float32Array, Float64Array, StringArray};
+use datafusion::arrow::array::{Array, ArrayRef, Float32Array, Float64Array, StringArray, ListArray};
 use datafusion::arrow::datatypes::DataType;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::logical_expr::{ScalarUDF, Signature, TypeSignature, Volatility};
@@ -292,6 +292,140 @@ pub fn create_predict_udf(registry: Arc<ModelRegistry>) -> ScalarUDF {
             Ok(Arc::new(DataType::Float32))
         }) as Arc<dyn Fn(&[DataType]) -> Result<Arc<DataType>> + Send + Sync>),
         &predict,
+    )
+}
+
+/// Create `onnx_predict()` UDF for ONNX model inference with array features
+/// Syntax: onnx_predict('model_name', ARRAY[1.0, 2.0, 3.0])
+pub fn create_onnx_predict_udf(registry: Arc<ModelRegistry>) -> ScalarUDF {
+    let onnx_predict = make_scalar_function(move |args: &[ArrayRef]| {
+        #[cfg(feature = "ml")]
+        {
+            if args.len() != 2 {
+                return Err(DataFusionError::Execution(
+                    "onnx_predict() requires exactly 2 arguments: model_name (string) and features (array of floats)".to_string(),
+                ));
+            }
+
+            // First argument is model name
+            let model_name_arr = args[0]
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or_else(|| {
+                    DataFusionError::Execution("First argument must be model name (string)".to_string())
+                })?;
+
+            // Second argument is features array
+            let features_list = args[1]
+                .as_any()
+                .downcast_ref::<ListArray>()
+                .ok_or_else(|| {
+                    DataFusionError::Execution("Second argument must be an array of floats".to_string())
+                })?;
+
+            let num_rows = model_name_arr.len();
+            let mut predictions = Vec::with_capacity(num_rows);
+
+            for row_idx in 0..num_rows {
+                // Handle NULL model names
+                if model_name_arr.is_null(row_idx) {
+                    predictions.push(None);
+                    continue;
+                }
+
+                let model_name = model_name_arr.value(row_idx);
+
+                // Handle NULL features
+                if features_list.is_null(row_idx) {
+                    predictions.push(None);
+                    continue;
+                }
+
+                // Get model from registry
+                let session = registry
+                    .get_model(model_name)
+                    .ok_or_else(|| {
+                        DataFusionError::Execution(format!(
+                            "Model '{}' not found. Use CREATE MODEL first.",
+                            model_name
+                        ))
+                    })?;
+
+                // Extract features from list array
+                let features_array = features_list.value(row_idx);
+
+                let input_features: Vec<f32> = if let Some(float32_arr) = features_array.as_any().downcast_ref::<Float32Array>() {
+                    // Extract f32 values
+                    (0..float32_arr.len())
+                        .map(|i| float32_arr.value(i))
+                        .collect()
+                } else if let Some(float64_arr) = features_array.as_any().downcast_ref::<Float64Array>() {
+                    // Extract f64 values and convert to f32
+                    (0..float64_arr.len())
+                        .map(|i| float64_arr.value(i) as f32)
+                        .collect()
+                } else {
+                    return Err(DataFusionError::Execution(
+                        "Features array must contain Float32 or Float64 values".to_string(),
+                    ));
+                };
+
+                let num_features = input_features.len();
+
+                debug!(
+                    "onnx_predict() inference: model={}, features={}",
+                    model_name, num_features
+                );
+
+                // Create input tensor (1 x num_features) - ort 2.0 API
+                let input_tensor = Tensor::from_array(([1, num_features], input_features))
+                    .map_err(|e| DataFusionError::External(Box::new(e)))?;
+
+                // Run inference - ort 2.0 API
+                let mut session_guard = session.lock().unwrap();
+                let outputs = session_guard
+                    .run(ort::inputs!["input" => input_tensor])
+                    .map_err(|e| DataFusionError::External(Box::new(e)))?;
+
+                // Extract output (assuming first output, first element) - ort 2.0 API
+                let (_shape, output_data) = outputs[0]
+                    .try_extract_tensor::<f32>()
+                    .map_err(|e| DataFusionError::External(Box::new(e)))?;
+
+                let prediction = output_data[0];
+                predictions.push(Some(prediction));
+            }
+
+            // Return predictions as Float32Array (with nulls for NULL inputs)
+            let prediction_values: Vec<Option<f32>> = predictions;
+            Ok(Arc::new(Float32Array::from(prediction_values)) as ArrayRef)
+        }
+
+        #[cfg(not(feature = "ml"))]
+        {
+            Err(DataFusionError::NotImplemented(
+                "ONNX Runtime not available - compile with 'ml' feature".to_string(),
+            ))
+        }
+    });
+
+    ScalarUDF::new(
+        "onnx_predict",
+        &Signature::exact(
+            vec![
+                DataType::Utf8, // model_name
+                DataType::List(Arc::new(datafusion::arrow::datatypes::Field::new(
+                    "item",
+                    DataType::Float32,
+                    true,
+                ))), // features array
+            ],
+            Volatility::Stable,
+        ),
+        &(Arc::new(|_args: &[DataType]| {
+            Ok(Arc::new(DataType::Float32))
+        }) as Arc<dyn Fn(&[DataType]) -> Result<Arc<DataType>> + Send + Sync>),
+        &onnx_predict,
     )
 }
 

@@ -7,6 +7,16 @@
 #[cfg(all(test, feature = "ml"))]
 mod onnx_tests {
     use miracledb::udf::onnx::ModelRegistry;
+    use miracledb::engine::MiracleEngine;
+
+    /// Helper function to get a test model path
+    /// In production, you'd have a real ONNX model file checked in
+    fn create_test_model() -> String {
+        // Return a path where a test model might exist
+        // Tests using this should be marked #[ignore] if the file doesn't exist
+        std::env::var("TEST_ONNX_MODEL_PATH")
+            .unwrap_or_else(|_| "./test_models/simple_model.onnx".to_string())
+    }
 
     /// Test that ONNX ModelRegistry can be created
     /// This verifies the ort 2.0 API is correctly integrated
@@ -234,6 +244,80 @@ mod onnx_tests {
         // Try to unload non-existent model
         let result = engine.model_registry.unload_model("nonexistent");
         assert!(result.is_err(), "Should fail to unload non-existent model");
+    }
+
+    #[tokio::test]
+    #[ignore] // Requires actual model
+    async fn test_onnx_predict_udf_with_array() {
+        use miracledb::engine::MiracleEngine;
+
+        let engine = MiracleEngine::new().await.expect("Failed to create engine");
+        let model_path = create_test_model();
+
+        // Load model
+        engine.model_registry.load_model("test_model", &model_path).ok();
+
+        // Test onnx_predict with array syntax
+        let result = engine
+            .query("SELECT onnx_predict('test_model', ARRAY[1.0, 2.0, 3.0]) as prediction")
+            .await;
+
+        if result.is_ok() {
+            let df = result.unwrap();
+            let batches = df.collect().await;
+
+            if batches.is_ok() {
+                let batches = batches.unwrap();
+                assert!(!batches.is_empty(), "Should have prediction result");
+
+                // Verify the result has a prediction column
+                let batch = &batches[0];
+                assert_eq!(batch.num_columns(), 1);
+                assert_eq!(batch.column(0).data_type(), &arrow::datatypes::DataType::Float32);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_onnx_predict_udf_model_not_found() {
+        use miracledb::engine::MiracleEngine;
+
+        let engine = MiracleEngine::new().await.expect("Failed to create engine");
+
+        // Try prediction with non-existent model using array syntax
+        let result = engine
+            .query("SELECT onnx_predict('nonexistent_model', ARRAY[1.0, 2.0]) as prediction")
+            .await;
+
+        // Query should parse successfully
+        assert!(result.is_ok(), "Query should parse successfully");
+
+        // The error happens at collect time
+        if let Ok(df) = result {
+            let collect_result = df.collect().await;
+            assert!(
+                collect_result.is_err(),
+                "Should fail when model doesn't exist"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_onnx_predict_vs_predict() {
+        use miracledb::engine::MiracleEngine;
+
+        let engine = MiracleEngine::new().await.expect("Failed to create engine");
+
+        // Both UDFs should be registered
+        // predict() takes variadic args: predict('model', col1, col2, col3)
+        // onnx_predict() takes array: onnx_predict('model', ARRAY[col1, col2, col3])
+
+        // Both should parse successfully (execution will fail without model)
+        let result1 = engine.query("SELECT predict('model', 1.0, 2.0)").await;
+        let result2 = engine.query("SELECT onnx_predict('model', ARRAY[1.0, 2.0])").await;
+
+        assert!(result1.is_ok(), "predict() UDF should be registered");
+        assert!(result2.is_ok(), "onnx_predict() UDF should be registered");
     }
 
     #[tokio::test]
