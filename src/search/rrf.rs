@@ -24,6 +24,9 @@ pub struct SearchResult {
     /// Unique identifier for this result (could be row ID, document ID, etc.)
     pub id: String,
 
+    /// Score from the source search (used by reciprocal_rank_fusion free function)
+    pub score: f32,
+
     /// Original rank in the source list (0-based)
     pub rank: usize,
 
@@ -35,6 +38,69 @@ pub struct SearchResult {
 
     /// Result data (generic JSON)
     pub data: serde_json::Value,
+}
+
+/// Reciprocal Rank Fusion: combines multiple ranked result lists into one.
+///
+/// This is the standalone free-function variant. It takes lists of `SearchResult`
+/// values (ordered by relevance descending within each list) and returns a new
+/// list ranked by the RRF score:
+///
+///   RRF_score(d) = Σ 1 / (k + rank(d))
+///
+/// where `rank` is 1-based (the best result in a list has rank 1).
+///
+/// # Arguments
+/// * `result_lists` – one entry per search source; each inner `Vec` is ordered
+///   best-first.
+/// * `k` – smoothing constant (60 is the value recommended in the original RRF
+///   paper and works well in practice).
+///
+/// # Returns
+/// A new `Vec<SearchResult>` sorted descending by RRF score. The `score` field
+/// of every returned item contains its RRF score; all other fields are copied
+/// from the first occurrence of that id across the input lists.
+pub fn reciprocal_rank_fusion(
+    result_lists: Vec<Vec<SearchResult>>,
+    k: usize,
+) -> Vec<SearchResult> {
+    let mut scores: std::collections::HashMap<String, f32> = std::collections::HashMap::new();
+    // Keep the first SearchResult seen for each id so we can copy its metadata.
+    let mut first_seen: std::collections::HashMap<String, SearchResult> =
+        std::collections::HashMap::new();
+
+    for result_list in result_lists {
+        for (rank_0, result) in result_list.into_iter().enumerate() {
+            // rank is 1-based in the RRF formula
+            let rrf_score = 1.0 / ((k + rank_0 + 1) as f32);
+            *scores.entry(result.id.clone()).or_insert(0.0) += rrf_score;
+            first_seen.entry(result.id.clone()).or_insert(result);
+        }
+    }
+
+    let mut combined: Vec<SearchResult> = scores
+        .into_iter()
+        .map(|(id, rrf_score)| {
+            let mut item = first_seen.remove(&id).unwrap_or_else(|| SearchResult {
+                id: id.clone(),
+                score: 0.0,
+                rank: 0,
+                original_score: None,
+                source: String::new(),
+                data: serde_json::Value::Null,
+            });
+            item.score = rrf_score;
+            item
+        })
+        .collect();
+
+    // Sort descending by RRF score
+    combined.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    combined
 }
 
 /// Combined result after RRF scoring
@@ -211,6 +277,7 @@ mod tests {
         let vector_results = vec![
             SearchResult {
                 id: "doc1".to_string(),
+                score: 0.0,
                 rank: 0,
                 original_score: Some(0.95),
                 source: "vector".to_string(),
@@ -218,6 +285,7 @@ mod tests {
             },
             SearchResult {
                 id: "doc2".to_string(),
+                score: 0.0,
                 rank: 1,
                 original_score: Some(0.85),
                 source: "vector".to_string(),
@@ -228,6 +296,7 @@ mod tests {
         let text_results = vec![
             SearchResult {
                 id: "doc2".to_string(), // Appears in both!
+                score: 0.0,
                 rank: 0,
                 original_score: Some(10.5),
                 source: "text".to_string(),
@@ -235,6 +304,7 @@ mod tests {
             },
             SearchResult {
                 id: "doc3".to_string(),
+                score: 0.0,
                 rank: 1,
                 original_score: Some(8.3),
                 source: "text".to_string(),
@@ -268,6 +338,7 @@ mod tests {
         let set1 = vec![
             SearchResult {
                 id: "doc1".to_string(),
+                score: 0.0,
                 rank: 0,
                 original_score: Some(1.0),
                 source: "set1".to_string(),
@@ -275,6 +346,7 @@ mod tests {
             },
             SearchResult {
                 id: "doc2".to_string(),
+                score: 0.0,
                 rank: 1,
                 original_score: Some(0.9),
                 source: "set1".to_string(),
@@ -285,6 +357,7 @@ mod tests {
         let set2 = vec![
             SearchResult {
                 id: "doc2".to_string(), // Only doc2 in both
+                score: 0.0,
                 rank: 0,
                 original_score: Some(1.0),
                 source: "set2".to_string(),

@@ -11,7 +11,7 @@ use tokio::sync::RwLock;
 use serde::{Serialize, Deserialize};
 
 pub mod rrf;
-pub use rrf::{RRFEngine, RRFResult, SearchResult as RRFSearchResult};
+pub use rrf::{RRFEngine, RRFResult, SearchResult as RRFSearchResult, reciprocal_rank_fusion};
 
 /// Search result
 #[derive(Clone, Debug, Serialize, Deserialize)]

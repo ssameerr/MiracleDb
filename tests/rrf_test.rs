@@ -367,3 +367,103 @@ mod rrf_tests {
         assert!(duration.as_millis() < 1000, "RRF should complete in under 1 second for 10K rows");
     }
 }
+
+// ---------------------------------------------------------------------------
+// Pure-Rust unit tests for the reciprocal_rank_fusion() free function
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod rrf_algorithm_tests {
+    use miracledb::search::rrf::{reciprocal_rank_fusion, SearchResult};
+
+    fn sr(id: &str, score: f32) -> SearchResult {
+        SearchResult {
+            id: id.to_string(),
+            score,
+            rank: 0,
+            original_score: None,
+            source: String::new(),
+            data: serde_json::Value::Null,
+        }
+    }
+
+    #[test]
+    fn test_rrf_basic() {
+        let results1 = vec![
+            sr("doc1", 0.9),
+            sr("doc2", 0.8),
+            sr("doc3", 0.7),
+        ];
+        let results2 = vec![
+            sr("doc2", 0.95),
+            sr("doc1", 0.85),
+            sr("doc4", 0.75),
+        ];
+
+        let combined = reciprocal_rank_fusion(vec![results1, results2], 60);
+
+        // doc2: rank 2 in list1 (1/62) + rank 1 in list2 (1/61) = highest RRF score
+        assert_eq!(combined[0].id, "doc2");
+        // doc1: rank 1 in list1 (1/61) + rank 2 in list2 (1/62) = second highest
+        assert_eq!(combined[1].id, "doc1");
+    }
+
+    #[test]
+    fn test_rrf_single_list() {
+        let results = vec![vec![
+            sr("doc1", 0.9),
+            sr("doc2", 0.8),
+        ]];
+        let combined = reciprocal_rank_fusion(results, 60);
+        assert_eq!(combined.len(), 2);
+        assert_eq!(combined[0].id, "doc1");
+    }
+
+    #[test]
+    fn test_rrf_empty_lists() {
+        let combined = reciprocal_rank_fusion(vec![], 60);
+        assert!(combined.is_empty());
+    }
+
+    #[test]
+    fn test_rrf_scores_descending() {
+        // All scores in the returned list must be non-increasing.
+        let list1 = vec![sr("a", 1.0), sr("b", 0.9), sr("c", 0.8)];
+        let list2 = vec![sr("c", 1.0), sr("b", 0.9), sr("a", 0.8)];
+        let combined = reciprocal_rank_fusion(vec![list1, list2], 60);
+        for w in combined.windows(2) {
+            assert!(
+                w[0].score >= w[1].score,
+                "scores must be non-increasing: {} < {}",
+                w[0].score,
+                w[1].score
+            );
+        }
+    }
+
+    #[test]
+    fn test_rrf_document_appearing_in_all_lists_wins() {
+        // "shared" appears at rank 1 in all three lists; nothing else does.
+        let make = |extra: &str| vec![sr("shared", 1.0), sr(extra, 0.5)];
+        let combined = reciprocal_rank_fusion(
+            vec![make("x"), make("y"), make("z")],
+            60,
+        );
+        assert_eq!(combined[0].id, "shared");
+    }
+
+    #[test]
+    fn test_rrf_score_formula() {
+        // With k=60, rank-1 result in a single list should score exactly 1/61.
+        let combined = reciprocal_rank_fusion(
+            vec![vec![sr("only", 0.99)]],
+            60,
+        );
+        let expected = 1.0_f32 / 61.0_f32;
+        assert!(
+            (combined[0].score - expected).abs() < 1e-6,
+            "score={} expected={}",
+            combined[0].score,
+            expected
+        );
+    }
+}
