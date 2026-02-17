@@ -200,6 +200,30 @@ pub struct SearchResponse {
     pub aggregations: Option<HashMap<String, Value>>,
 }
 
+/// Batch vector search request - accepts multiple query vectors at once
+#[derive(Debug, Deserialize)]
+pub struct BatchVectorSearchRequest {
+    /// Multiple query vectors to search with simultaneously
+    pub queries: Vec<Vec<f32>>,
+    /// Number of nearest neighbors to return per query
+    pub k: usize,
+    /// Name of the vector field to search
+    pub field: String,
+}
+
+/// A single k-NN result hit
+#[derive(Debug, Serialize)]
+pub struct SearchHit {
+    pub id: String,
+    pub score: f32,
+}
+
+/// Batch vector search response - one result list per input query
+#[derive(Debug, Serialize)]
+pub struct BatchVectorSearchResponse {
+    pub results: Vec<Vec<SearchHit>>,
+}
+
 /// Search handler
 pub async fn handle_search(
     schema: Arc<TableSchema>,
