@@ -8,6 +8,7 @@ use tantivy::{
     Index, IndexWriter, IndexReader, ReloadPolicy,
     query::{QueryParser, Query, PhraseQuery, RegexQuery},
     collector::TopDocs,
+    snippet::SnippetGenerator,
     doc,
     Document,
     TantivyDocument,
@@ -380,6 +381,23 @@ impl FullTextIndex {
         // Execute search
         let top_docs = searcher.search(&query, &TopDocs::with_limit(limit))?;
 
+        // Build one SnippetGenerator per text field so we can try each field
+        // and return the first non-empty highlighted snippet.
+        let snippet_generators: Vec<(usize, SnippetGenerator)> = self
+            .text_fields
+            .iter()
+            .enumerate()
+            .filter_map(|(i, (_, field))| {
+                match SnippetGenerator::create(&searcher, &*query, *field) {
+                    Ok(gen) => Some((i, gen)),
+                    Err(e) => {
+                        tracing::warn!("Could not create SnippetGenerator for field {}: {}", i, e);
+                        None
+                    }
+                }
+            })
+            .collect();
+
         // Extract results
         let mut results = Vec::new();
 
@@ -399,10 +417,24 @@ impl FullTextIndex {
                 continue;
             }
 
+            // Generate a highlight snippet from the first field that yields a
+            // non-empty result.  If no field contains a matching fragment,
+            // `highlight` remains `None`.
+            let highlight: Option<String> = snippet_generators
+                .iter()
+                .find_map(|(_, gen)| {
+                    let snippet = gen.snippet_from_doc(&retrieved_doc);
+                    if snippet.is_empty() {
+                        None
+                    } else {
+                        Some(snippet.to_html())
+                    }
+                });
+
             results.push(FullTextSearchResult {
                 id,
                 score,
-                highlights: None, // TODO: Implement highlighting
+                highlight,
             });
         }
 
@@ -447,7 +479,9 @@ impl Default for TextSearchOptions {
 pub struct FullTextSearchResult {
     pub id: String,
     pub score: f32,
-    pub highlights: Option<Vec<String>>,
+    /// HTML snippet with matched terms wrapped in `<b>` tags.
+    /// `None` when no matching fragment could be extracted from the document.
+    pub highlight: Option<String>,
 }
 
 #[cfg(test)]
