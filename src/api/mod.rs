@@ -22,6 +22,8 @@ pub mod spatial;
 pub mod backup;
 pub mod vector_index;
 pub mod fulltext_index;
+pub mod bulk_index;
+pub mod notifications;
 
 use std::sync::Arc;
 use axum::{Router, routing::{get, post}, Extension};
@@ -47,6 +49,7 @@ pub fn router(
     backup_api_state: Option<backup::BackupApiState>,
     vector_manager: Arc<VectorIndexManager>,
     fulltext_manager: Arc<FullTextIndexManager>,
+    notification_manager: Arc<crate::notification::NotificationManager>,
 ) -> Router {
     let rate_limiter = Arc::new(middleware::RateLimiter::new(100, 60)); // 100 req per minute
     let dashboard_state = Arc::new(dashboard::DashboardState::new());
@@ -93,12 +96,24 @@ pub fn router(
     }
 
     // Vector Index Management API
-    let vector_state = vector_index::VectorIndexState::new(vector_manager);
+    let vector_state = vector_index::VectorIndexState::new(vector_manager.clone());
     app = app.nest("/api/v1/vector/index", vector_index::routes(vector_state));
 
     // Full-Text Index Management API
-    let fulltext_state = fulltext_index::FullTextIndexState::new(fulltext_manager);
+    let fulltext_state = fulltext_index::FullTextIndexState::new(fulltext_manager.clone());
     app = app.nest("/api/v1/fulltext/index", fulltext_index::routes(fulltext_state));
+
+    // Bulk Indexing API
+    let bulk_state = bulk_index::BulkIndexState::new(
+        engine.clone(),
+        vector_manager.clone(),
+        fulltext_manager.clone(),
+    );
+    app = app.nest("/api/v1/bulk", bulk_index::routes(bulk_state));
+
+    // Notification API
+    let notification_state = notifications::NotificationApiState::new(notification_manager);
+    app = app.nest("/api/v1/notifications", notifications::routes(notification_state));
 
     app
         // Documentation
@@ -112,7 +127,7 @@ pub fn router(
         .route("/api/v1/metadata", get(metadata_handler))
         
         // GraphQL
-        .nest("/graphql", graphql::routes())
+        .nest("/graphql", graphql::routes(engine.clone()))
         
         // WebSocket for CDC
         .route("/ws/events", get(websocket::handler))
