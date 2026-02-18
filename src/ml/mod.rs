@@ -14,3 +14,6 @@ pub mod candle_inference;
 pub use candle_inference::block_on_candle;
 #[cfg(feature = "nlp")]
 pub use candle_inference::CandleEngine;
+
+pub mod feature_store;
+pub mod automl;
