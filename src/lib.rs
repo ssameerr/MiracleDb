@@ -25,6 +25,7 @@ pub mod audit;
 pub mod optimizer;
 pub mod blob;
 pub mod chat;
+pub mod realtime;
 pub mod vector;
 pub mod fulltext;
 pub mod geospatial;
@@ -49,6 +50,9 @@ pub mod financial;
 pub mod healthcare;
 pub mod iot;
 pub mod protocol;
+
+// Time Travel & Data Versioning
+pub mod version;
 
 // Specialized modules
 pub mod nlp;
@@ -485,6 +489,11 @@ async fn start_server(port: u16) -> Result<(), Box<dyn std::error::Error>> {
     let fulltext_manager = std::sync::Arc::new(fulltext::FullTextIndexManager::new("./data/fulltext"));
     info!("Full-Text Index Manager initialized.");
 
+    // 4.8 Initialize Notification Manager
+    let (notification_manager, _notification_rx) = notification::NotificationManager::new();
+    let notification_manager = std::sync::Arc::new(notification_manager);
+    info!("Notification Manager initialized.");
+
     // Register Prometheus metrics
     if let Err(e) = observability::metrics::MetricsCollector::register_default_metrics() {
         info!("Metrics already registered: {}", e);
@@ -503,6 +512,7 @@ async fn start_server(port: u16) -> Result<(), Box<dyn std::error::Error>> {
         Some(backup_api_state),
         vector_manager,
         fulltext_manager,
+        notification_manager,
     );
     
     // 5. Start Server with TLS (if configured)
