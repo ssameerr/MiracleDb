@@ -6,6 +6,7 @@ use clap::{Parser, Subcommand};
 
 
 pub mod engine;
+pub mod embedded;
 pub mod api;
 pub mod udf;
 pub mod security;

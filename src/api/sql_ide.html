@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MiracleDB SQL IDE</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/theme/monokai.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/sql/sql.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/edit/matchbrackets.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/addon/comment/comment.min.js"></script>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: 'Segoe UI', sans-serif; background: #1e1e2e; color: #cdd6f4; height: 100vh; display: flex; flex-direction: column; }
+header { background: #181825; padding: 12px 20px; display: flex; align-items: center; gap: 16px; border-bottom: 1px solid #313244; }
+header h1 { font-size: 18px; font-weight: 700; color: #cba6f7; }
+.badge { background: #45475a; color: #a6adc8; font-size: 11px; padding: 2px 8px; border-radius: 12px; }
+main { flex: 1; display: flex; overflow: hidden; }
+#schema-panel { width: 220px; background: #181825; border-right: 1px solid #313244; overflow-y: auto; padding: 12px; flex-shrink: 0; }
+#schema-panel h3 { font-size: 12px; text-transform: uppercase; color: #6c7086; margin-bottom: 8px; letter-spacing: 0.05em; }
+.table-item { padding: 6px 8px; cursor: pointer; border-radius: 6px; font-size: 13px; display: flex; align-items: center; gap: 6px; }
+.table-item:hover { background: #313244; }
+.table-item::before { content: "&#x229F;"; color: #89b4fa; }
+#editor-panel { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+#toolbar { padding: 8px 12px; background: #181825; border-bottom: 1px solid #313244; display: flex; gap: 8px; align-items: center; }
+.btn { padding: 6px 14px; border-radius: 6px; border: none; cursor: pointer; font-size: 13px; font-weight: 600; transition: opacity 0.15s; }
+.btn:hover { opacity: 0.85; }
+.btn-primary { background: #89b4fa; color: #1e1e2e; }
+.btn-secondary { background: #313244; color: #cdd6f4; }
+.btn-danger { background: #f38ba8; color: #1e1e2e; }
+#query-status { font-size: 12px; color: #a6adc8; margin-left: 8px; }
+.CodeMirror { flex: 1; font-size: 14px; line-height: 1.6; height: 100%; }
+.CodeMirror-scroll { height: 100%; }
+#editor-wrapper { flex: 1; overflow: hidden; display: flex; flex-direction: column; border-bottom: 1px solid #313244; min-height: 200px; }
+#results-panel { height: 280px; overflow: auto; background: #181825; }
+#results-panel h3 { padding: 8px 12px; font-size: 12px; text-transform: uppercase; color: #6c7086; border-bottom: 1px solid #313244; letter-spacing: 0.05em; }
+#results-table-wrapper { overflow: auto; padding: 4px; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th { background: #313244; color: #89b4fa; text-align: left; padding: 7px 12px; position: sticky; top: 0; font-weight: 600; }
+td { padding: 6px 12px; border-bottom: 1px solid #313244; color: #cdd6f4; }
+tr:hover td { background: #262637; }
+.null-value { color: #585b70; font-style: italic; }
+.error-msg { color: #f38ba8; padding: 12px; font-size: 13px; }
+.success-msg { color: #a6e3a1; padding: 12px; font-size: 13px; }
+#history-panel { padding: 8px 12px; }
+.history-item { padding: 4px 8px; cursor: pointer; border-radius: 4px; font-size: 12px; color: #a6adc8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.history-item:hover { background: #313244; color: #cdd6f4; }
+#resizer { height: 4px; background: #313244; cursor: ns-resize; }
+#resizer:hover { background: #89b4fa; }
+</style>
+</head>
+<body>
+<header>
+  <h1>MiracleDB SQL IDE</h1>
+  <span class="badge" id="conn-status">Connected</span>
+  <span class="badge" id="db-version">MiracleDB</span>
+</header>
+<main>
+  <div id="schema-panel">
+    <h3>Tables</h3>
+    <div id="table-list"><div style="color:#585b70;font-size:12px;">Loading...</div></div>
+    <h3 style="margin-top:16px;">Query History</h3>
+    <div id="history-list"></div>
+  </div>
+  <div id="editor-panel">
+    <div id="toolbar">
+      <button class="btn btn-primary" onclick="runQuery()">Run (Ctrl+Enter)</button>
+      <button class="btn btn-secondary" onclick="formatQuery()">Format</button>
+      <button class="btn btn-secondary" onclick="clearEditor()">Clear</button>
+      <button class="btn btn-danger" onclick="clearResults()">Clear Results</button>
+      <span id="query-status"></span>
+    </div>
+    <div id="editor-wrapper">
+      <textarea id="sql-editor">SELECT 'Hello, MiracleDB!' AS greeting, 42 AS answer;</textarea>
+    </div>
+    <div id="resizer"></div>
+    <div id="results-panel">
+      <h3>Results</h3>
+      <div id="results-table-wrapper"><div style="padding:12px;color:#585b70;font-size:13px;">Run a query to see results.</div></div>
+    </div>
+  </div>
+</main>
+<script>
+const API_BASE = '';
+let queryHistory = [];
+
+// Init CodeMirror
+const editor = CodeMirror.fromTextArea(document.getElementById('sql-editor'), {
+  mode: 'text/x-sql',
+  theme: 'monokai',
+  lineNumbers: true,
+  matchBrackets: true,
+  indentWithTabs: false,
+  tabSize: 2,
+  extraKeys: {
+    'Ctrl-Enter': runQuery,
+    'Cmd-Enter': runQuery,
+    'Ctrl-/': 'toggleComment',
+  }
+});
+
+// Make editor fill its container
+const editorWrapper = document.getElementById('editor-wrapper');
+editor.setSize('100%', '100%');
+
+// Resizer
+const resizer = document.getElementById('resizer');
+const resultsPanel = document.getElementById('results-panel');
+let isResizing = false;
+resizer.addEventListener('mousedown', e => { isResizing = true; e.preventDefault(); });
+document.addEventListener('mousemove', e => {
+  if (!isResizing) return;
+  const main = document.querySelector('main');
+  const mainRect = main.getBoundingClientRect();
+  const newResultsHeight = mainRect.bottom - e.clientY;
+  if (newResultsHeight > 80 && newResultsHeight < mainRect.height - 150) {
+    resultsPanel.style.height = newResultsHeight + 'px';
+  }
+});
+document.addEventListener('mouseup', () => { isResizing = false; });
+
+async function runQuery() {
+  const sql = editor.getSelection() || editor.getValue();
+  if (!sql.trim()) return;
+
+  const status = document.getElementById('query-status');
+  status.textContent = 'Running...';
+  status.style.color = '#89b4fa';
+  const t0 = performance.now();
+
+  try {
+    const resp = await fetch(API_BASE + '/api/v1/query', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sql: sql.trim() })
+    });
+
+    const elapsed = (performance.now() - t0).toFixed(0);
+    const data = await resp.json();
+
+    if (!resp.ok) {
+      showError(data.error || data.message || 'Query failed');
+      status.textContent = 'Error (' + elapsed + 'ms)';
+      status.style.color = '#f38ba8';
+    } else {
+      renderResults(data);
+      const rowCount = data.rows ? data.rows.length : (data.affected_rows || 0);
+      status.textContent = rowCount + ' row(s) ' + elapsed + 'ms';
+      status.style.color = '#a6e3a1';
+      addToHistory(sql.trim());
+    }
+  } catch (err) {
+    showError('Connection failed: ' + err.message);
+    status.textContent = 'Connection error';
+    status.style.color = '#f38ba8';
+  }
+}
+
+function renderResults(data) {
+  const wrapper = document.getElementById('results-table-wrapper');
+
+  if (data.rows && data.rows.length > 0) {
+    const cols = data.columns || Object.keys(data.rows[0]);
+    let html = '<table><thead><tr>' + cols.map(c => '<th>' + escHtml(c) + '</th>').join('') + '</tr></thead><tbody>';
+    for (const row of data.rows) {
+      html += '<tr>' + cols.map(c => {
+        const v = Array.isArray(row) ? row[cols.indexOf(c)] : row[c];
+        if (v === null || v === undefined) return '<td><span class="null-value">NULL</span></td>';
+        return '<td>' + escHtml(String(v)) + '</td>';
+      }).join('') + '</tr>';
+    }
+    html += '</tbody></table>';
+    wrapper.innerHTML = html;
+  } else if (data.affected_rows !== undefined) {
+    wrapper.innerHTML = '<div class="success-msg">Query OK - ' + data.affected_rows + ' row(s) affected</div>';
+  } else if (data.rows && data.rows.length === 0) {
+    wrapper.innerHTML = '<div class="success-msg">Query returned 0 rows</div>';
+  } else {
+    wrapper.innerHTML = '<div class="success-msg">' + escHtml(JSON.stringify(data)) + '</div>';
+  }
+}
+
+function showError(msg) {
+  document.getElementById('results-table-wrapper').innerHTML = '<div class="error-msg">Error: ' + escHtml(msg) + '</div>';
+}
+
+function clearResults() {
+  document.getElementById('results-table-wrapper').innerHTML = '<div style="padding:12px;color:#585b70;font-size:13px;">Results cleared.</div>';
+  document.getElementById('query-status').textContent = '';
+}
+
+function clearEditor() { editor.setValue(''); editor.focus(); }
+
+function formatQuery() {
+  const val = editor.getValue();
+  const keywords = ['select','from','where','join','left','right','inner','outer','on','group by','order by','having','limit','offset','insert','update','delete','create','drop','alter','table','index','view','as','and','or','not','in','like','between','null','is','asc','desc','distinct','count','sum','avg','min','max'];
+  let formatted = val;
+  keywords.forEach(kw => {
+    formatted = formatted.replace(new RegExp('\\b' + kw + '\\b', 'gi'), kw.toUpperCase());
+  });
+  editor.setValue(formatted);
+}
+
+function addToHistory(sql) {
+  const short = sql.substring(0, 60).replace(/\n/g, ' ');
+  queryHistory.unshift(short);
+  if (queryHistory.length > 20) queryHistory.pop();
+  renderHistory();
+}
+
+function renderHistory() {
+  const list = document.getElementById('history-list');
+  list.innerHTML = queryHistory.map((q, i) =>
+    '<div class="history-item" onclick="loadHistory(' + i + ')" title="' + escHtml(q) + '">' + escHtml(q) + '</div>'
+  ).join('');
+}
+
+function loadHistory(i) {
+  editor.setValue(queryHistory[i]);
+}
+
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+async function loadTables() {
+  try {
+    const resp = await fetch(API_BASE + '/api/v1/tables');
+    if (resp.ok) {
+      const data = await resp.json();
+      const tables = data.tables || data || [];
+      const list = document.getElementById('table-list');
+      if (tables.length === 0) {
+        list.innerHTML = '<div style="color:#585b70;font-size:12px;">No tables yet</div>';
+      } else {
+        list.innerHTML = tables.map(t => {
+          const name = typeof t === 'string' ? t : t.name;
+          return '<div class="table-item" onclick="editor.setValue(\'SELECT * FROM ' + name + ' LIMIT 100;\')">' + escHtml(name) + '</div>';
+        }).join('');
+      }
+      document.getElementById('conn-status').textContent = 'Connected';
+    }
+  } catch(e) {
+    document.getElementById('conn-status').textContent = 'Offline';
+    document.getElementById('conn-status').style.color = '#f38ba8';
+    document.getElementById('table-list').innerHTML = '<div style="color:#585b70;font-size:12px;">Offline mode</div>';
+  }
+}
+
+loadTables();
+setInterval(loadTables, 30000);
+</script>
+</body>
+</html>

@@ -69,6 +69,9 @@ pub fn router(
         // Health check (Public, no rate limit?) - actually usually good to rate limit too, but skip auth
         .route("/health", get(health_check))
 
+        // Web SQL IDE
+        .route("/ide", get(sql_ide_handler))
+
         // RLM Agent
         .route("/api/v1/agent/run", post(agent_run_handler))
 
@@ -180,6 +183,13 @@ pub fn router(
 
 async fn health_check() -> &'static str {
     "OK"
+}
+
+async fn sql_ide_handler() -> axum::response::Response<axum::body::Body> {
+    use axum::response::IntoResponse;
+    use axum::http::header;
+    let html = include_str!("sql_ide.html");
+    ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], html).into_response()
 }
 
 async fn metrics_handler() -> String {
