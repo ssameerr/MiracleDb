@@ -204,6 +204,7 @@ mod tests {
     use crate::vector::VectorIndexManager;
     use arrow::array::{Float32Array, RecordBatch, StringArray};
     use arrow::datatypes::{DataType, Field, Schema};
+    use arrow::record_batch::RecordBatchIterator;
     use lance::dataset::{Dataset, WriteParams};
     use std::sync::Arc;
     use tempfile::TempDir;
@@ -239,10 +240,13 @@ mod tests {
             }
         }
 
-        let embedding_array = Float32Array::from(embedding_values);
-        let embedding_list = arrow::array::FixedSizeListArray::try_new_from_values(
-            embedding_array,
+        let embedding_array = Arc::new(Float32Array::from(embedding_values));
+        let field = Arc::new(arrow::datatypes::Field::new("item", arrow::datatypes::DataType::Float32, true));
+        let embedding_list = arrow::array::FixedSizeListArray::try_new(
+            field,
             128,
+            embedding_array,
+            None,
         )?;
 
         let batch = RecordBatch::try_new(
@@ -250,9 +254,13 @@ mod tests {
             vec![Arc::new(ids), Arc::new(embedding_list)],
         )?;
 
-        // Write to Lance dataset
+        // Write to Lance dataset using RecordBatchIterator
+        let reader = arrow::record_batch::RecordBatchIterator::new(
+            vec![Ok(batch)].into_iter(),
+            schema.clone(),
+        );
         Dataset::write(
-            vec![batch],
+            reader,
             &uri,
             Some(WriteParams {
                 mode: lance::dataset::WriteMode::Create,
@@ -320,7 +328,7 @@ mod tests {
         assert_eq!(response.success, false);
         assert_eq!(response.message, "Failed to create vector index");
         assert!(response.error.is_some());
-        assert!(response.error.unwrap().contains("Table name cannot be empty"));
+        assert!(response.0.error.as_deref().unwrap().contains("Table name cannot be empty"));
     }
 
     #[tokio::test]
@@ -346,7 +354,7 @@ mod tests {
         assert_eq!(response.success, false);
         assert_eq!(response.message, "Failed to create vector index");
         assert!(response.error.is_some());
-        assert!(response.error.unwrap().contains("Column name cannot be empty"));
+        assert!(response.0.error.as_deref().unwrap().contains("Column name cannot be empty"));
     }
 
     #[tokio::test]
@@ -372,7 +380,7 @@ mod tests {
         assert_eq!(response.success, false);
         assert_eq!(response.message, "Failed to create vector index");
         assert!(response.error.is_some());
-        assert!(response.error.unwrap().contains("does not exist"));
+        assert!(response.0.error.as_deref().unwrap().contains("does not exist"));
     }
 
     #[tokio::test]

@@ -319,17 +319,30 @@ pub fn register_search_functions(ctx: &datafusion::prelude::SessionContext) {
 mod tests {
     use super::*;
     use datafusion::arrow::array::Int64Array;
+    use datafusion::logical_expr::ColumnarValue;
+
+    fn extract_float64(cv: ColumnarValue) -> Arc<Float64Array> {
+        match cv {
+            ColumnarValue::Array(arr) => {
+                Arc::new(arr.as_any().downcast_ref::<Float64Array>().unwrap().clone())
+            }
+            ColumnarValue::Scalar(_) => panic!("expected array result"),
+        }
+    }
+
+    fn wrap_array(arr: ArrayRef) -> ColumnarValue {
+        ColumnarValue::Array(arr)
+    }
 
     #[test]
     fn test_rrf_basic() {
         // Test RRF with simple ranks
-        let rank1 = Arc::new(Int64Array::from(vec![1, 2, 3])) as ArrayRef;
-        let rank2 = Arc::new(Int64Array::from(vec![2, 1, 3])) as ArrayRef;
+        let rank1 = wrap_array(Arc::new(Int64Array::from(vec![1i64, 2, 3])) as ArrayRef);
+        let rank2 = wrap_array(Arc::new(Int64Array::from(vec![2i64, 1, 3])) as ArrayRef);
 
         let udf = create_rrf_udf();
         let result = (udf.fun())(&[rank1, rank2]).unwrap();
-
-        let scores = result.as_any().downcast_ref::<Float64Array>().unwrap();
+        let scores = extract_float64(result);
 
         // Document 0: rank 1 in list 1, rank 2 in list 2
         // RRF = 1/(60+1) + 1/(60+2) = 0.01639 + 0.01613 = 0.03252
@@ -347,33 +360,31 @@ mod tests {
     #[test]
     fn test_rrf_with_nulls() {
         // Test RRF with missing ranks (nulls)
-        let rank1 = Arc::new(Int64Array::from(vec![Some(1), Some(2), None])) as ArrayRef;
-        let rank2 = Arc::new(Int64Array::from(vec![Some(2), None, Some(1)])) as ArrayRef;
+        let rank1 = wrap_array(Arc::new(Int64Array::from(vec![Some(1i64), Some(2), None])) as ArrayRef);
+        let rank2 = wrap_array(Arc::new(Int64Array::from(vec![Some(2i64), None, Some(1)])) as ArrayRef);
 
         let udf = create_rrf_udf();
         let result = (udf.fun())(&[rank1, rank2]).unwrap();
-
-        let scores = result.as_any().downcast_ref::<Float64Array>().unwrap();
+        let scores = extract_float64(result);
 
         // Document 0: rank 1 + rank 2 = both present
         assert!(scores.value(0) > 0.03);
 
-        // Document 1: only rank 2 present (rank1=2)
+        // Document 1: only rank1=2 present (rank2 is None)
         assert!(scores.value(1) > 0.015 && scores.value(1) < 0.02);
 
-        // Document 2: only rank 2 present (rank=1)
+        // Document 2: only rank2=1 present (rank1 is None)
         assert!(scores.value(2) > 0.015 && scores.value(2) < 0.02);
     }
 
     #[test]
     fn test_hybrid_search_equal_weights() {
-        let vector_scores = Arc::new(Float64Array::from(vec![0.9, 0.7, 0.5])) as ArrayRef;
-        let text_scores = Arc::new(Float64Array::from(vec![0.6, 0.8, 0.9])) as ArrayRef;
+        let vector_scores = wrap_array(Arc::new(Float64Array::from(vec![0.9f64, 0.7, 0.5])) as ArrayRef);
+        let text_scores = wrap_array(Arc::new(Float64Array::from(vec![0.6f64, 0.8, 0.9])) as ArrayRef);
 
         let udf = create_hybrid_search_udf();
         let result = (udf.fun())(&[vector_scores, text_scores]).unwrap();
-
-        let scores = result.as_any().downcast_ref::<Float64Array>().unwrap();
+        let scores = extract_float64(result);
 
         // Equal weights: 0.5 * vector + 0.5 * text
         assert!((scores.value(0) - 0.75).abs() < 0.01); // 0.5*0.9 + 0.5*0.6 = 0.75
