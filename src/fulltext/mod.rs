@@ -443,12 +443,16 @@ impl FullTextIndex {
         Ok(results)
     }
 
-    /// Commit pending changes
+    /// Commit pending changes and reload the reader so searches see new docs
     fn commit(&self) -> Result<(), Box<dyn std::error::Error>> {
         let mut writer = self.writer.write().unwrap();
         writer.commit()?;
+        drop(writer); // release the write lock before reloading
 
-        tracing::debug!("Committed full-text index changes");
+        // ReloadPolicy::Manual requires an explicit reload after each commit
+        self.reader.reload()?;
+
+        tracing::debug!("Committed and reloaded full-text index");
 
         Ok(())
     }
