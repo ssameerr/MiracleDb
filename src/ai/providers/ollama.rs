@@ -7,6 +7,7 @@ use serde_json::Value;
 pub struct OllamaProvider {
     pub base_url: String,
     pub model: String,
+    pub embedding_dims: usize,
     client: reqwest::Client,
 }
 
@@ -15,6 +16,7 @@ impl OllamaProvider {
         Self {
             base_url: base_url.trim_end_matches('/').to_string(),
             model: model.to_string(),
+            embedding_dims: 768,
             client: reqwest::Client::new(),
         }
     }
@@ -50,7 +52,8 @@ impl LlmProvider for OllamaProvider {
             .json(&body)
             .send()
             .await
-            .map_err(|e| AiError::ProviderUnavailable(format!("ollama: {}", e)))?;
+            .map_err(|e| AiError::ProviderUnavailable(format!("ollama: {}", e)))?
+            .error_for_status()?;
 
         let json: Value = resp.json().await?;
         self.parse_completion_response(&json)
@@ -73,7 +76,8 @@ impl EmbeddingProvider for OllamaProvider {
                 .json(&body)
                 .send()
                 .await
-                .map_err(|e| AiError::ProviderUnavailable(format!("ollama embeddings: {}", e)))?;
+                .map_err(|e| AiError::ProviderUnavailable(format!("ollama embeddings: {}", e)))?
+                .error_for_status()?;
 
             let json: Value = resp.json().await?;
             let vec = json.get("embedding")
@@ -87,7 +91,7 @@ impl EmbeddingProvider for OllamaProvider {
         Ok(results)
     }
 
-    fn dimensions(&self) -> usize { 768 } // nomic-embed-text default
+    fn dimensions(&self) -> usize { self.embedding_dims }
 
     fn name(&self) -> &str { "ollama" }
 }
@@ -101,6 +105,10 @@ mod tests {
         let p = OllamaProvider::new("http://localhost:11434", "llama3.2:3b");
         assert_eq!(LlmProvider::name(&p), "ollama");
         assert_eq!(p.model, "llama3.2:3b");
+
+        // Also test slash trimming
+        let p_slash = OllamaProvider::new("http://localhost:11434/", "llama3.2:3b");
+        assert_eq!(p_slash.base_url, "http://localhost:11434");
     }
 
     #[test]
