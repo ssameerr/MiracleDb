@@ -8,17 +8,11 @@ pub enum AiError {
     #[error("Provider '{0}' unavailable")]
     ProviderUnavailable(String),
     #[error("HTTP error: {0}")]
-    Http(String),
+    Http(#[from] reqwest::Error),
     #[error("Parse error: {0}")]
     Parse(String),
     #[error("Configuration error: {0}")]
     Config(String),
-}
-
-impl From<reqwest::Error> for AiError {
-    fn from(e: reqwest::Error) -> Self {
-        AiError::Http(e.to_string())
-    }
 }
 
 /// A provider that generates text completions (used for Text-to-SQL).
