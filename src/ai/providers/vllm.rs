@@ -1,4 +1,4 @@
-//! vLLM provider — uses OpenAI-compatible /v1/chat/completions endpoint.
+//! vLLM provider — uses OpenAI-compatible API. base_url should include /v1 (e.g. http://host:8000/v1).
 
 use crate::ai::provider::{AiError, LlmProvider};
 use async_trait::async_trait;
