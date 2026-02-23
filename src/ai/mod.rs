@@ -87,8 +87,9 @@ impl ProviderRegistry {
             .as_deref()
             .unwrap_or(&self.config.default_embedding_provider);
 
+        // All unknown providers fall back to Candle (in-process, no external deps required).
         match name {
-            "candle" | _ => Arc::new(CandleEmbeddingProvider::new()),
+            _ => Arc::new(CandleEmbeddingProvider::new()),
         }
     }
 
