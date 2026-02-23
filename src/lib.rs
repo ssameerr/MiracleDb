@@ -160,6 +160,7 @@ pub mod portal;
 pub mod tcop;
 pub mod bootstrap;
 pub mod postmaster;
+pub mod ai;
 
 
 
