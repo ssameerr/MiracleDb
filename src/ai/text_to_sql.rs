@@ -42,14 +42,16 @@ impl TextToSqlEngine {
     pub async fn translate(&self, query: &str, schema: &[TableSchema]) -> Result<String, AiError> {
         let prompt = self.build_prompt(query, schema);
         let raw = self.provider.complete(&prompt).await?;
-        // Strip any accidental markdown code fences
-        let sql = raw
-            .trim()
-            .trim_start_matches("```sql")
-            .trim_start_matches("```")
-            .trim_end_matches("```")
-            .trim()
-            .to_string();
+        // Strip any accidental markdown code fences (use strip_prefix/strip_suffix to remove exactly once)
+        let trimmed = raw.trim();
+        let inner = if let Some(s) = trimmed.strip_prefix("```sql") {
+            s
+        } else if let Some(s) = trimmed.strip_prefix("```") {
+            s
+        } else {
+            trimmed
+        };
+        let sql = inner.strip_suffix("```").unwrap_or(inner).trim().to_string();
         Ok(sql)
     }
 }
@@ -89,6 +91,7 @@ mod tests {
         let prompt = engine.build_prompt("find users named Alice", &[]);
         assert!(prompt.contains("find users named Alice"));
         assert!(prompt.contains("SQL"));
+        assert!(!prompt.contains("Available tables:"));
     }
 
     #[test]
