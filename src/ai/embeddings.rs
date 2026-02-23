@@ -14,7 +14,7 @@ impl EmbeddingEngine {
 
     /// Embed a single text string.
     pub async fn embed_one(&self, text: &str) -> Result<Vec<f32>, AiError> {
-        let mut vecs = self.provider.embed(&[text]).await?;
+        let vecs = self.provider.embed(&[text]).await?;
         vecs.into_iter().next().ok_or_else(|| AiError::Parse("Empty embedding result".to_string()))
     }
 

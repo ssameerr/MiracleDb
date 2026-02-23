@@ -49,9 +49,9 @@ impl HybridSearchEngine {
 
         for list in lists {
             // Deduplicate within each list by id (keep first occurrence, highest rank)
-            let mut seen: HashMap<String, usize> = HashMap::new();
+            let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
             let deduped: Vec<_> = list.into_iter().enumerate().filter(|(_, r)| {
-                if seen.contains_key(&r.id) { false } else { seen.insert(r.id.clone(), 0); true }
+                seen.insert(r.id.clone())
             }).collect();
 
             for (rank, result) in deduped {
