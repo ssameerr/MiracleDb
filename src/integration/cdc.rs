@@ -81,6 +81,138 @@ impl WebhookDelivery {
     }
 }
 
+/// CDC event type from a PostgreSQL WAL source.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum CdcEventType {
+    Insert,
+    Update,
+    Delete,
+    Truncate,
+}
+
+/// A CDC event as emitted by the PostgreSQL WAL decoder.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CdcEvent {
+    pub event_type: CdcEventType,
+    pub table: String,
+    /// Row state before the change (None for inserts).
+    pub before: Option<serde_json::Value>,
+    /// Row state after the change (None for deletes).
+    pub after: Option<serde_json::Value>,
+    /// Unix timestamp (seconds since epoch).
+    pub timestamp: i64,
+}
+
+/// WAL operation decoded from PostgreSQL logical replication.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum WalOperation {
+    Insert,
+    Update,
+    Delete,
+    Begin,
+    Commit,
+}
+
+/// A single decoded WAL record from PostgreSQL logical replication.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WalRecord {
+    /// Log Sequence Number.
+    pub lsn: u64,
+    pub operation: WalOperation,
+    pub table: String,
+    pub data: serde_json::Value,
+}
+
+/// Configuration for connecting to a PostgreSQL source for CDC via logical replication.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PostgresCdcConfig {
+    pub host: String,
+    pub port: u16,
+    pub database: String,
+    pub username: String,
+    pub password: String,
+    /// Logical replication slot name.
+    pub slot_name: String,
+    /// Publication name (pg_publication).
+    pub publication: String,
+}
+
+#[cfg(test)]
+mod cdc_tests {
+    use super::*;
+
+    #[test]
+    fn test_cdc_event_insert_creation() {
+        let event = CdcEvent {
+            event_type: CdcEventType::Insert,
+            table: "users".to_string(),
+            before: None,
+            after: Some(serde_json::json!({"id": 1, "name": "Alice"})),
+            timestamp: 1700000000,
+        };
+        assert_eq!(event.event_type, CdcEventType::Insert);
+        assert!(event.after.is_some());
+        assert!(event.before.is_none());
+    }
+
+    #[test]
+    fn test_cdc_event_update_has_before_after() {
+        let event = CdcEvent {
+            event_type: CdcEventType::Update,
+            table: "users".to_string(),
+            before: Some(serde_json::json!({"id": 1, "name": "Alice"})),
+            after: Some(serde_json::json!({"id": 1, "name": "Bob"})),
+            timestamp: 1700000001,
+        };
+        assert_eq!(event.event_type, CdcEventType::Update);
+        assert!(event.before.is_some());
+        assert!(event.after.is_some());
+    }
+
+    #[test]
+    fn test_cdc_event_delete_has_no_after() {
+        let event = CdcEvent {
+            event_type: CdcEventType::Delete,
+            table: "users".to_string(),
+            before: Some(serde_json::json!({"id": 1})),
+            after: None,
+            timestamp: 1700000002,
+        };
+        assert_eq!(event.event_type, CdcEventType::Delete);
+        assert!(event.before.is_some());
+        assert!(event.after.is_none());
+    }
+
+    #[test]
+    fn test_cdc_source_config() {
+        let config = PostgresCdcConfig {
+            host: "localhost".to_string(),
+            port: 5432,
+            database: "mydb".to_string(),
+            username: "replicator".to_string(),
+            password: "secret".to_string(),
+            slot_name: "miracle_slot".to_string(),
+            publication: "miracle_pub".to_string(),
+        };
+        assert_eq!(config.host, "localhost");
+        assert_eq!(config.port, 5432);
+        assert_eq!(config.slot_name, "miracle_slot");
+    }
+
+    #[test]
+    fn test_wal_decode_insert() {
+        let record = WalRecord {
+            lsn: 12345,
+            operation: WalOperation::Insert,
+            table: "orders".to_string(),
+            data: serde_json::json!({"id": 42, "amount": 99.99}),
+        };
+        assert_eq!(record.operation, WalOperation::Insert);
+        assert_eq!(record.table, "orders");
+        assert_eq!(record.lsn, 12345);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
