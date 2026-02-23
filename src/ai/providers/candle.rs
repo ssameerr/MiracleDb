@@ -22,7 +22,7 @@ impl CandleEmbeddingProvider {
         let seed = hasher.finish();
         // Produce a deterministic unit-ish vector seeded from the text hash
         let raw: Vec<f32> = (0..DIMS)
-            .map(|i| ((seed.wrapping_add(i as u64).wrapping_mul(6364136223846793005)) as f32) / f32::MAX)
+            .map(|i| ((seed.wrapping_add(i as u64).wrapping_mul(6364136223846793005)) as i64 as f32) / (i64::MAX as f32))
             .collect();
         // L2-normalize
         let norm = raw.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-9);
