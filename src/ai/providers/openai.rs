@@ -60,7 +60,7 @@ impl LlmProvider for OpenAiProvider {
 impl EmbeddingProvider for OpenAiProvider {
     async fn embed(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, AiError> {
         let body = serde_json::json!({
-            "model": "text-embedding-3-small",
+            "model": self.model,
             "input": texts
         });
 
