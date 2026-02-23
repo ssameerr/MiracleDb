@@ -81,23 +81,64 @@ impl ProviderRegistry {
         self.session_embedding_override = Some(provider.to_string());
     }
 
+    /// Active LLM provider name (resolved).
+    pub fn active_llm_name(&self) -> &str {
+        self.session_llm_override
+            .as_deref()
+            .unwrap_or(&self.config.default_llm_provider)
+    }
+
+    /// Return the active LLM provider as a trait object.
+    pub fn llm(&self) -> Arc<dyn LlmProvider> {
+        let name = self.active_llm_name();
+        match name {
+            "claude" => {
+                if let Some(ref key) = self.config.claude_api_key {
+                    return Arc::new(providers::claude::ClaudeProvider::new(key, "claude-haiku-4-5-20251001"));
+                }
+                Arc::new(providers::ollama::OllamaProvider::new(&self.config.ollama_base_url, &self.config.ollama_model))
+            }
+            "openai" => {
+                if let Some(ref key) = self.config.openai_api_key {
+                    return Arc::new(providers::openai::OpenAiProvider::new(key, "gpt-4o-mini", &self.config.openai_base_url));
+                }
+                Arc::new(providers::ollama::OllamaProvider::new(&self.config.ollama_base_url, &self.config.ollama_model))
+            }
+            "gemini" => {
+                if let Some(ref key) = self.config.gemini_api_key {
+                    return Arc::new(providers::gemini::GeminiProvider::new(key, &self.config.gemini_model));
+                }
+                Arc::new(providers::ollama::OllamaProvider::new(&self.config.ollama_base_url, &self.config.ollama_model))
+            }
+            "vllm" => {
+                if let (Some(ref url), Some(ref model)) = (&self.config.vllm_base_url, &self.config.vllm_model) {
+                    return Arc::new(providers::vllm::VllmProvider::new(url, model));
+                }
+                Arc::new(providers::ollama::OllamaProvider::new(&self.config.ollama_base_url, &self.config.ollama_model))
+            }
+            // Default to Ollama for "ollama" or any unknown provider
+            _ => Arc::new(providers::ollama::OllamaProvider::new(&self.config.ollama_base_url, &self.config.ollama_model)),
+        }
+    }
+
     /// Return the active embedding provider.
     pub fn embedder(&self) -> Arc<dyn EmbeddingProvider> {
         let name = self.session_embedding_override
             .as_deref()
             .unwrap_or(&self.config.default_embedding_provider);
 
-        // All unknown providers fall back to Candle (in-process, no external deps required).
         match name {
+            "openai" => {
+                if let Some(ref key) = self.config.openai_api_key {
+                    return Arc::new(providers::openai::OpenAiProvider::new(key, "text-embedding-3-small", &self.config.openai_base_url));
+                }
+                // Fall back to candle if no key configured
+                Arc::new(CandleEmbeddingProvider::new())
+            }
+            "ollama" => Arc::new(providers::ollama::OllamaProvider::new(&self.config.ollama_base_url, &self.config.ollama_model)),
+            // Default: use Candle in-process (no external deps required)
             _ => Arc::new(CandleEmbeddingProvider::new()),
         }
-    }
-
-    /// Active LLM provider name (resolved).
-    pub fn active_llm_name(&self) -> &str {
-        self.session_llm_override
-            .as_deref()
-            .unwrap_or(&self.config.default_llm_provider)
     }
 }
 
@@ -135,5 +176,23 @@ mod tests {
         let config = AiConfig::default();
         assert_eq!(config.resolve_env("${ANTHROPIC_API_KEY}"), "test-key");
         std::env::remove_var("ANTHROPIC_API_KEY");
+    }
+
+    #[test]
+    fn test_provider_registry_llm_returns_ollama_by_default() {
+        let config = AiConfig::default();
+        let registry = ProviderRegistry::new(config);
+        let llm = registry.llm();
+        assert_eq!(llm.name(), "ollama");
+    }
+
+    #[test]
+    fn test_provider_registry_llm_session_override_returns_claude() {
+        let mut config = AiConfig::default();
+        config.claude_api_key = Some("test-key".to_string());
+        let mut registry = ProviderRegistry::new(config);
+        registry.set_session_llm("claude");
+        let llm = registry.llm();
+        assert_eq!(llm.name(), "claude");
     }
 }

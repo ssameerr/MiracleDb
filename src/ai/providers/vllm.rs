@@ -37,7 +37,7 @@ impl LlmProvider for VllmProvider {
         });
 
         let resp = self.client
-            .post(format!("{}/v1/chat/completions", self.base_url))
+            .post(format!("{}/chat/completions", self.base_url))
             .json(&body)
             .send()
             .await
@@ -57,12 +57,12 @@ mod tests {
 
     #[test]
     fn test_vllm_provider_new() {
-        let p = VllmProvider::new("http://localhost:8000", "defog/sqlcoder-7b-2");
+        let p = VllmProvider::new("http://localhost:8000/v1", "defog/sqlcoder-7b-2");
         assert_eq!(p.name(), "vllm");
         assert_eq!(p.model, "defog/sqlcoder-7b-2");
         // Test slash trimming
-        let p_slash = VllmProvider::new("http://localhost:8000/", "model");
-        assert_eq!(p_slash.base_url, "http://localhost:8000");
+        let p_slash = VllmProvider::new("http://localhost:8000/v1/", "model");
+        assert_eq!(p_slash.base_url, "http://localhost:8000/v1");
     }
 
     #[test]
