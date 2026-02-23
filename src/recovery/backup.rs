@@ -16,11 +16,15 @@ pub struct Snapshot {
 
 pub struct BackupManager {
     archive_dir: PathBuf,
+    meta_lock: tokio::sync::Mutex<()>,
 }
 
 impl BackupManager {
     pub fn new(archive_dir: &str) -> Self {
-        Self { archive_dir: PathBuf::from(archive_dir) }
+        Self {
+            archive_dir: PathBuf::from(archive_dir),
+            meta_lock: tokio::sync::Mutex::new(()),
+        }
     }
 
     pub async fn create_snapshot(&self, db_name: &str) -> Result<Snapshot, Box<dyn std::error::Error + Send + Sync>> {
@@ -75,11 +79,12 @@ impl BackupManager {
     }
 
     async fn save_metadata(&self, snap: &Snapshot) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let _guard = self.meta_lock.lock().await;
         let mut snaps = self.list_snapshots(&snap.db_name).await.unwrap_or_default();
         snaps.push(snap.clone());
         let data = serde_json::to_vec(&snaps)?;
         let index_path = self.index_path(&snap.db_name);
-        fs::create_dir_all(index_path.parent().unwrap()).await?;
+        fs::create_dir_all(index_path.parent().ok_or("index path has no parent")?).await?;
         fs::write(index_path, data).await?;
         Ok(())
     }
