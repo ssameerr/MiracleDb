@@ -2,7 +2,7 @@
 use arrow::datatypes::DataType;
 
 /// Map an Arrow DataType to the corresponding PostgreSQL OID (text format).
-pub fn arrow_to_pg_oid(dt: &DataType) -> i32 {
+pub fn arrow_to_pg_oid(dt: &DataType) -> u32 {
     match dt {
         DataType::Int8
         | DataType::Int16
@@ -15,7 +15,8 @@ pub fn arrow_to_pg_oid(dt: &DataType) -> i32 {
         DataType::Utf8 | DataType::LargeUtf8 => 25,  // TEXT
         DataType::Boolean => 16,   // BOOL
         DataType::Date32 => 1082,  // DATE
-        DataType::Timestamp(_, _) => 1114, // TIMESTAMP
+        DataType::Timestamp(_, Some(_)) => 1184, // TIMESTAMPTZ (timezone-aware)
+        DataType::Timestamp(_, None) => 1114,    // TIMESTAMP (no timezone)
         DataType::Binary | DataType::LargeBinary => 17, // BYTEA
         _ => 25, // TEXT fallback (safe for everything else)
     }
@@ -67,5 +68,22 @@ mod tests {
         assert_eq!(arrow_to_pg_oid(&DataType::List(
             std::sync::Arc::new(arrow::datatypes::Field::new("item", DataType::Int32, true))
         )), 25);
+    }
+
+    #[test]
+    fn test_timestamp_maps_to_timestamp() {
+        use arrow::datatypes::TimeUnit;
+        assert_eq!(arrow_to_pg_oid(&DataType::Timestamp(TimeUnit::Microsecond, None)), 1114);
+    }
+
+    #[test]
+    fn test_timestamp_tz_maps_to_timestamptz() {
+        use arrow::datatypes::TimeUnit;
+        assert_eq!(arrow_to_pg_oid(&DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()))), 1184);
+    }
+
+    #[test]
+    fn test_binary_maps_to_bytea() {
+        assert_eq!(arrow_to_pg_oid(&DataType::Binary), 17);
     }
 }
