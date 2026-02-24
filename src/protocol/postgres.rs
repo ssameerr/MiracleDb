@@ -237,12 +237,21 @@ pub fn substitute_params(sql: &str, params: &[Option<String>]) -> String {
         let re = regex::Regex::new(&placeholder).unwrap();
         let replacement = match value {
             None => "NULL".to_string(),
-            Some(v) if v.parse::<f64>().is_ok() => v.clone(),
+            Some(v) if {
+                let lower = v.trim().to_lowercase();
+                lower != "inf" && lower != "-inf" && lower != "nan"
+                && lower != "infinity" && lower != "-infinity"
+                && v.parse::<f64>().is_ok()
+            } => v.clone(),
             Some(v) => format!("'{}'", v.replace('\'', "''")),
         };
-        // $1 in the replacement string refers to the captured trailing character.
-        let repl_with_suffix = format!("{}$1", replacement);
-        result = re.replace_all(&result, repl_with_suffix.as_str()).to_string();
+        // Use a closure so the replacement string is never interpreted for
+        // backreferences — prevents `$` in param values (e.g., "$100") from
+        // being mangled by the regex engine.
+        result = re.replace_all(&result, |caps: &regex::Captures| {
+            let suffix = caps.get(1).map_or("", |m| m.as_str());
+            format!("{}{}", replacement, suffix)
+        }).to_string();
     }
     result
 }
@@ -582,6 +591,22 @@ mod handler_tests {
         let params = vec![None];
         let result = substitute_params(sql, &params);
         assert_eq!(result, "SELECT * FROM users WHERE name = NULL");
+    }
+
+    #[test]
+    fn test_substitute_param_value_containing_dollar() {
+        let sql = "SELECT * FROM prices WHERE amount = $1";
+        let params = vec![Some("$100".to_string())];
+        let result = substitute_params(sql, &params);
+        assert_eq!(result, "SELECT * FROM prices WHERE amount = '$100'");
+    }
+
+    #[test]
+    fn test_substitute_inf_is_quoted_not_numeric() {
+        let sql = "SELECT $1";
+        let params = vec![Some("inf".to_string())];
+        let result = substitute_params(sql, &params);
+        assert_eq!(result, "SELECT 'inf'");
     }
 }
 
