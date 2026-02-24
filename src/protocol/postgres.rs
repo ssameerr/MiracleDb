@@ -3,6 +3,209 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use bytes::{BytesMut, BufMut};
 use std::sync::Arc;
 
+// ─── pgwire-based handler (Task 2) ───────────────────────────────────────────
+
+use arrow::array::ArrayRef;
+use arrow::datatypes::DataType;
+use pgwire::api::ClientInfo;
+use pgwire::api::query::SimpleQueryHandler;
+use pgwire::api::results::{DataRowEncoder, FieldFormat, FieldInfo, QueryResponse, Response, Tag};
+use pgwire::error::{PgWireError, PgWireResult};
+use crate::engine::MiracleEngine;
+use crate::protocol::type_map::arrow_to_pg_oid;
+
+/// Convert a single Arrow array cell to its PostgreSQL text representation.
+/// Returns None for null values.
+pub fn arrow_col_to_text(col: &ArrayRef, row_idx: usize) -> Option<String> {
+    if col.is_null(row_idx) {
+        return None;
+    }
+    use arrow::array::*;
+    let s = match col.data_type() {
+        DataType::Boolean => col
+            .as_any()
+            .downcast_ref::<BooleanArray>()
+            .unwrap()
+            .value(row_idx)
+            .to_string(),
+        DataType::Int8 => col
+            .as_any()
+            .downcast_ref::<Int8Array>()
+            .unwrap()
+            .value(row_idx)
+            .to_string(),
+        DataType::Int16 => col
+            .as_any()
+            .downcast_ref::<Int16Array>()
+            .unwrap()
+            .value(row_idx)
+            .to_string(),
+        DataType::Int32 => col
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .unwrap()
+            .value(row_idx)
+            .to_string(),
+        DataType::Int64 => col
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap()
+            .value(row_idx)
+            .to_string(),
+        DataType::UInt8 => col
+            .as_any()
+            .downcast_ref::<UInt8Array>()
+            .unwrap()
+            .value(row_idx)
+            .to_string(),
+        DataType::UInt16 => col
+            .as_any()
+            .downcast_ref::<UInt16Array>()
+            .unwrap()
+            .value(row_idx)
+            .to_string(),
+        DataType::UInt32 => col
+            .as_any()
+            .downcast_ref::<UInt32Array>()
+            .unwrap()
+            .value(row_idx)
+            .to_string(),
+        DataType::UInt64 => col
+            .as_any()
+            .downcast_ref::<UInt64Array>()
+            .unwrap()
+            .value(row_idx)
+            .to_string(),
+        DataType::Float32 => col
+            .as_any()
+            .downcast_ref::<Float32Array>()
+            .unwrap()
+            .value(row_idx)
+            .to_string(),
+        DataType::Float64 => col
+            .as_any()
+            .downcast_ref::<Float64Array>()
+            .unwrap()
+            .value(row_idx)
+            .to_string(),
+        DataType::Utf8 => col
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap()
+            .value(row_idx)
+            .to_string(),
+        DataType::LargeUtf8 => col
+            .as_any()
+            .downcast_ref::<LargeStringArray>()
+            .unwrap()
+            .value(row_idx)
+            .to_string(),
+        DataType::Date32 | DataType::Date64 => {
+            arrow::util::display::array_value_to_string(col, row_idx).unwrap_or_default()
+        }
+        _ => arrow::util::display::array_value_to_string(col, row_idx).unwrap_or_default(),
+    };
+    Some(s)
+}
+
+/// Build pgwire FieldInfo descriptors from an Arrow schema.
+fn schema_to_fields(schema: &arrow::datatypes::Schema) -> Vec<FieldInfo> {
+    schema
+        .fields()
+        .iter()
+        .map(|f| {
+            let oid = arrow_to_pg_oid(f.data_type());
+            let pg_type =
+                pgwire::api::Type::from_oid(oid).unwrap_or(pgwire::api::Type::TEXT);
+            FieldInfo::new(
+                f.name().clone(),
+                None,
+                None,
+                pg_type,
+                FieldFormat::Text,
+            )
+        })
+        .collect()
+}
+
+pub struct MiracleDbHandler {
+    engine: Arc<MiracleEngine>,
+}
+
+impl MiracleDbHandler {
+    pub fn new(engine: Arc<MiracleEngine>) -> Self {
+        Self { engine }
+    }
+}
+
+#[async_trait::async_trait]
+impl SimpleQueryHandler for MiracleDbHandler {
+    async fn do_query<C>(
+        &self,
+        _client: &mut C,
+        query: &str,
+    ) -> PgWireResult<Vec<Response>>
+    where
+        C: ClientInfo
+            + pgwire::api::ClientPortalStore
+            + futures::Sink<pgwire::messages::PgWireBackendMessage>
+            + Unpin
+            + Send
+            + Sync,
+        C::Error: std::fmt::Debug,
+        PgWireError: From<<C as futures::Sink<pgwire::messages::PgWireBackendMessage>>::Error>,
+    {
+        let sql = query.trim_end_matches(';').trim();
+
+        let df = self
+            .engine
+            .query(sql)
+            .await
+            .map_err(|e| PgWireError::ApiError(Box::new(e)))?;
+        let batches = df
+            .collect()
+            .await
+            .map_err(|e| PgWireError::ApiError(Box::new(e)))?;
+
+        if batches.is_empty() || batches.iter().all(|b| b.num_rows() == 0) {
+            let verb = sql
+                .split_whitespace()
+                .next()
+                .unwrap_or("SELECT")
+                .to_uppercase();
+            let tag = if verb == "SELECT" {
+                Tag::new("SELECT").with_rows(0)
+            } else {
+                Tag::new(&verb)
+            };
+            return Ok(vec![Response::Execution(tag)]);
+        }
+
+        let schema = batches[0].schema();
+        let fields = Arc::new(schema_to_fields(&schema));
+
+        let mut rows: Vec<PgWireResult<pgwire::messages::data::DataRow>> = Vec::new();
+        for batch in &batches {
+            let mut encoder = DataRowEncoder::new(fields.clone());
+            for row_idx in 0..batch.num_rows() {
+                for col_idx in 0..batch.num_columns() {
+                    let text: Option<String> =
+                        arrow_col_to_text(batch.column(col_idx), row_idx);
+                    encoder
+                        .encode_field(&text.as_deref())
+                        .map_err(|e| PgWireError::ApiError(Box::new(e)))?;
+                }
+                rows.push(Ok(encoder.take_row()));
+            }
+        }
+
+        let row_stream = futures::stream::iter(rows);
+        Ok(vec![Response::Query(QueryResponse::new(fields, row_stream))])
+    }
+}
+
+// ─── end Task 2 ──────────────────────────────────────────────────────────────
+
 pub struct PgServer {
     addr: String,
 }
@@ -150,6 +353,53 @@ async fn handle_connection(mut socket: TcpStream) -> Result<(), Box<dyn std::err
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod handler_tests {
+    use super::*;
+    use arrow::array::{Float64Array, Int32Array, StringArray};
+    use arrow::datatypes::{DataType, Field, Schema};
+    use arrow::record_batch::RecordBatch;
+    use std::sync::Arc;
+
+    #[test]
+    fn test_encode_int32_as_text() {
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let arr = Arc::new(Int32Array::from(vec![42]));
+        let batch = RecordBatch::try_new(schema, vec![arr]).unwrap();
+        let text = arrow_col_to_text(batch.column(0), 0);
+        assert_eq!(text, Some("42".to_string()));
+    }
+
+    #[test]
+    fn test_encode_null_as_none() {
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, true)]));
+        let arr = Arc::new(Int32Array::from(vec![None::<i32>]));
+        let batch = RecordBatch::try_new(schema, vec![arr]).unwrap();
+        let text = arrow_col_to_text(batch.column(0), 0);
+        assert_eq!(text, None);
+    }
+
+    #[test]
+    fn test_encode_float64_as_text() {
+        let schema =
+            Arc::new(Schema::new(vec![Field::new("price", DataType::Float64, false)]));
+        let arr = Arc::new(Float64Array::from(vec![3.14]));
+        let batch = RecordBatch::try_new(schema, vec![arr]).unwrap();
+        let text = arrow_col_to_text(batch.column(0), 0);
+        assert!(text.is_some());
+        assert!(text.unwrap().contains("3.14"));
+    }
+
+    #[test]
+    fn test_encode_utf8_as_text() {
+        let schema = Arc::new(Schema::new(vec![Field::new("name", DataType::Utf8, false)]));
+        let arr = Arc::new(StringArray::from(vec!["hello"]));
+        let batch = RecordBatch::try_new(schema, vec![arr]).unwrap();
+        let text = arrow_col_to_text(batch.column(0), 0);
+        assert_eq!(text, Some("hello".to_string()));
+    }
 }
 
 #[cfg(test)]
