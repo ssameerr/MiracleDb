@@ -101,6 +101,7 @@ redis = { version = "0.24", features = ["tokio-comp"] }
 # Protocols
 arrow-flight = "52.0.0"
 postgres-protocol = "0.6"
+pgwire = { version = "0.38", features = ["server-api"] }
 
 # I18n
 icu = "1.4"
