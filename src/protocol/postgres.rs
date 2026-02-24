@@ -103,6 +103,9 @@ pub fn arrow_col_to_text(col: &ArrayRef, row_idx: usize) -> Option<String> {
         DataType::Date32 | DataType::Date64 => {
             arrow::util::display::array_value_to_string(col, row_idx).unwrap_or_default()
         }
+        DataType::Timestamp(_, _) => {
+            arrow::util::display::array_value_to_string(col, row_idx).unwrap_or_default()
+        }
         _ => arrow::util::display::array_value_to_string(col, row_idx).unwrap_or_default(),
     };
     Some(s)
@@ -128,6 +131,7 @@ fn schema_to_fields(schema: &arrow::datatypes::Schema) -> Vec<FieldInfo> {
         .collect()
 }
 
+#[derive(Clone)]
 pub struct MiracleDbHandler {
     engine: Arc<MiracleEngine>,
 }
@@ -167,18 +171,28 @@ impl SimpleQueryHandler for MiracleDbHandler {
             .await
             .map_err(|e| PgWireError::ApiError(Box::new(e)))?;
 
-        if batches.is_empty() || batches.iter().all(|b| b.num_rows() == 0) {
+        if batches.is_empty() {
+            // DDL/DML with no schema available — Execution is correct
             let verb = sql
                 .split_whitespace()
                 .next()
                 .unwrap_or("SELECT")
                 .to_uppercase();
-            let tag = if verb == "SELECT" {
-                Tag::new("SELECT").with_rows(0)
-            } else {
-                Tag::new(&verb)
-            };
+            let tag = Tag::new(&verb);
             return Ok(vec![Response::Execution(tag)]);
+        }
+
+        if batches.iter().all(|b| b.num_rows() == 0) {
+            // SELECT that returned 0 rows — must still send RowDescription
+            let schema = batches[0].schema();
+            let fields = Arc::new(schema_to_fields(&schema));
+            let empty_stream = futures::stream::iter(
+                Vec::<PgWireResult<pgwire::messages::data::DataRow>>::new(),
+            );
+            return Ok(vec![Response::Query(QueryResponse::new(
+                fields,
+                empty_stream,
+            ))]);
         }
 
         let schema = batches[0].schema();
