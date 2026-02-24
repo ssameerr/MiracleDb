@@ -1,5 +1,48 @@
 use tokio::net::TcpListener;
 use std::sync::Arc;
+use std::path::Path;
+
+// ─── Task 5: Config-gated SSL/TLS ────────────────────────────────────────────
+
+/// Build a `TlsAcceptor` from PEM certificate and private-key files.
+///
+/// Returns `None` when either path is absent, the files cannot be read, or the
+/// PEM material cannot be parsed.  Returns `Some(TlsAcceptor)` on success.
+///
+/// The returned type is `tokio_rustls::TlsAcceptor`, which is re-exported by
+/// pgwire 0.38 as `pgwire::tokio::TlsAcceptor` when the `_ring` feature is
+/// active.  Both are the same concrete type and can be passed directly to
+/// `pgwire::tokio::process_socket`.
+pub fn build_tls_acceptor(
+    cert_path: Option<impl AsRef<Path>>,
+    key_path: Option<impl AsRef<Path>>,
+) -> Option<tokio_rustls::TlsAcceptor> {
+    let cert_path = cert_path?;
+    let key_path = key_path?;
+
+    if !cert_path.as_ref().exists() || !key_path.as_ref().exists() {
+        return None;
+    }
+
+    let cert_pem = std::fs::read(cert_path.as_ref()).ok()?;
+    let key_pem = std::fs::read(key_path.as_ref()).ok()?;
+
+    let certs = rustls_pemfile::certs(&mut cert_pem.as_slice())
+        .collect::<Result<Vec<_>, _>>()
+        .ok()?;
+
+    let private_key = rustls_pemfile::private_key(&mut key_pem.as_slice())
+        .ok()??;
+
+    let config = rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(certs, private_key)
+        .ok()?;
+
+    Some(tokio_rustls::TlsAcceptor::from(Arc::new(config)))
+}
+
+// ─── end Task 5 helpers ──────────────────────────────────────────────────────
 
 // ─── pgwire-based handler (Task 2 + Task 3) ──────────────────────────────────
 
@@ -362,11 +405,20 @@ impl pgwire::api::PgWireServerHandlers for MiracleHandlers {
 pub struct PgServer {
     addr: String,
     engine: Arc<MiracleEngine>,
+    /// Optional TLS acceptor.  When `Some`, new connections will be offered
+    /// TLS via the pgwire SSL-negotiation handshake.
+    tls: Option<tokio_rustls::TlsAcceptor>,
 }
 
 impl PgServer {
     pub fn new(addr: &str, engine: Arc<MiracleEngine>) -> Self {
-        Self { addr: addr.to_string(), engine }
+        Self { addr: addr.to_string(), engine, tls: None }
+    }
+
+    /// Configure TLS.  Accepts the acceptor produced by [`build_tls_acceptor`].
+    pub fn with_tls(mut self, tls: tokio_rustls::TlsAcceptor) -> Self {
+        self.tls = Some(tls);
+        self
     }
 
     pub async fn start(&self) -> Result<(), Box<dyn std::error::Error>> {
@@ -376,10 +428,11 @@ impl PgServer {
         loop {
             let (socket, _) = listener.accept().await?;
             let handlers = MiracleHandlers::new(self.engine.clone());
+            let tls = self.tls.clone();
             tokio::spawn(async move {
                 let result = pgwire::tokio::process_socket(
                     socket,
-                    None, // no TLS — Task 5 adds this
+                    tls,
                     handlers,
                 )
                 .await;
@@ -390,6 +443,34 @@ impl PgServer {
         }
     }
 }
+
+// ─── Task 5 unit tests ───────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tls_tests {
+    use super::build_tls_acceptor;
+
+    /// When neither cert nor key path is supplied, `build_tls_acceptor` must
+    /// return `None` immediately without attempting any filesystem access.
+    #[test]
+    fn test_tls_config_none_when_no_paths_given() {
+        let result = build_tls_acceptor(None::<&str>, None::<&str>);
+        assert!(result.is_none(), "expected None when no paths given");
+    }
+
+    /// When paths are supplied but the files do not exist on disk,
+    /// `build_tls_acceptor` must return `None` gracefully.
+    #[test]
+    fn test_tls_config_none_for_nonexistent_paths() {
+        let result = build_tls_acceptor(
+            Some("/nonexistent/path/server.crt"),
+            Some("/nonexistent/path/server.key"),
+        );
+        assert!(result.is_none(), "expected None for non-existent cert/key files");
+    }
+}
+
+// ─── end Task 5 unit tests ───────────────────────────────────────────────────
 
 #[cfg(test)]
 mod handler_tests {
