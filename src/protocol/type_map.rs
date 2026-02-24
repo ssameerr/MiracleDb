@@ -14,7 +14,7 @@ pub fn arrow_to_pg_oid(dt: &DataType) -> u32 {
         DataType::Float64 => 701,  // FLOAT8
         DataType::Utf8 | DataType::LargeUtf8 => 25,  // TEXT
         DataType::Boolean => 16,   // BOOL
-        DataType::Date32 => 1082,  // DATE
+        DataType::Date32 | DataType::Date64 => 1082,  // DATE
         DataType::Timestamp(_, Some(_)) => 1184, // TIMESTAMPTZ (timezone-aware)
         DataType::Timestamp(_, None) => 1114,    // TIMESTAMP (no timezone)
         DataType::Binary | DataType::LargeBinary => 17, // BYTEA
