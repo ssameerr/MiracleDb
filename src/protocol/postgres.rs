@@ -1,4 +1,4 @@
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpListener;
 use std::sync::Arc;
 
 // ─── pgwire-based handler (Task 2 + Task 3) ──────────────────────────────────
