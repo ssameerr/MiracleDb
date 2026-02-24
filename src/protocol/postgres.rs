@@ -15,7 +15,7 @@ use pgwire::api::results::{
     FieldFormat, FieldInfo, QueryResponse, Response, Tag,
 };
 use pgwire::api::stmt::{NoopQueryParser, StoredStatement};
-use pgwire::error::{ErrorInfo, PgWireError, PgWireResult};
+use pgwire::error::{PgWireError, PgWireResult};
 use crate::engine::MiracleEngine;
 use crate::protocol::type_map::arrow_to_pg_oid;
 
@@ -145,6 +145,55 @@ impl MiracleDbHandler {
     pub fn new(engine: Arc<MiracleEngine>) -> Self {
         Self { engine }
     }
+
+    /// Shared execution logic used by both SimpleQueryHandler and ExtendedQueryHandler.
+    async fn execute_sql(&self, sql: &str) -> PgWireResult<Response> {
+        let trimmed = sql.trim_end_matches(';').trim();
+
+        let df = self
+            .engine
+            .query(trimmed)
+            .await
+            .map_err(|e| PgWireError::ApiError(Box::new(e)))?;
+        let batches = df
+            .collect()
+            .await
+            .map_err(|e| PgWireError::ApiError(Box::new(e)))?;
+
+        if batches.is_empty() {
+            let verb = trimmed
+                .split_whitespace()
+                .next()
+                .unwrap_or("OK")
+                .to_uppercase();
+            return Ok(Response::Execution(Tag::new(&verb)));
+        }
+
+        let schema = batches[0].schema();
+        let fields = Arc::new(schema_to_fields(&schema));
+
+        if batches.iter().all(|b| b.num_rows() == 0) {
+            let row_stream = futures::stream::iter(vec![]);
+            return Ok(Response::Query(QueryResponse::new(fields, row_stream)));
+        }
+
+        let mut rows: Vec<PgWireResult<pgwire::messages::data::DataRow>> = Vec::new();
+        for batch in &batches {
+            for row_idx in 0..batch.num_rows() {
+                let mut encoder = DataRowEncoder::new(fields.clone());
+                for col_idx in 0..batch.num_columns() {
+                    let text = arrow_col_to_text(batch.column(col_idx), row_idx);
+                    encoder
+                        .encode_field(&text.as_deref())
+                        .map_err(|e| PgWireError::ApiError(Box::new(e)))?;
+                }
+                rows.push(Ok(encoder.take_row()));
+            }
+        }
+
+        let row_stream = futures::stream::iter(rows);
+        Ok(Response::Query(QueryResponse::new(fields, row_stream)))
+    }
 }
 
 #[async_trait::async_trait]
@@ -164,62 +213,7 @@ impl SimpleQueryHandler for MiracleDbHandler {
         C::Error: std::fmt::Debug,
         PgWireError: From<<C as futures::Sink<pgwire::messages::PgWireBackendMessage>>::Error>,
     {
-        let sql = query.trim_end_matches(';').trim();
-
-        let df = self
-            .engine
-            .query(sql)
-            .await
-            .map_err(|e| PgWireError::ApiError(Box::new(e)))?;
-        let batches = df
-            .collect()
-            .await
-            .map_err(|e| PgWireError::ApiError(Box::new(e)))?;
-
-        if batches.is_empty() {
-            // DDL/DML with no schema available — Execution is correct
-            let verb = sql
-                .split_whitespace()
-                .next()
-                .unwrap_or("SELECT")
-                .to_uppercase();
-            let tag = Tag::new(&verb);
-            return Ok(vec![Response::Execution(tag)]);
-        }
-
-        if batches.iter().all(|b| b.num_rows() == 0) {
-            // SELECT that returned 0 rows — must still send RowDescription
-            let schema = batches[0].schema();
-            let fields = Arc::new(schema_to_fields(&schema));
-            let empty_stream = futures::stream::iter(
-                Vec::<PgWireResult<pgwire::messages::data::DataRow>>::new(),
-            );
-            return Ok(vec![Response::Query(QueryResponse::new(
-                fields,
-                empty_stream,
-            ))]);
-        }
-
-        let schema = batches[0].schema();
-        let fields = Arc::new(schema_to_fields(&schema));
-
-        let mut rows: Vec<PgWireResult<pgwire::messages::data::DataRow>> = Vec::new();
-        for batch in &batches {
-            let mut encoder = DataRowEncoder::new(fields.clone());
-            for row_idx in 0..batch.num_rows() {
-                for col_idx in 0..batch.num_columns() {
-                    let text: Option<String> =
-                        arrow_col_to_text(batch.column(col_idx), row_idx);
-                    encoder
-                        .encode_field(&text.as_deref())
-                        .map_err(|e| PgWireError::ApiError(Box::new(e)))?;
-                }
-                rows.push(Ok(encoder.take_row()));
-            }
-        }
-
-        let row_stream = futures::stream::iter(rows);
-        Ok(vec![Response::Query(QueryResponse::new(fields, row_stream))])
+        Ok(vec![self.execute_sql(query).await?])
     }
 }
 
@@ -227,21 +221,28 @@ impl SimpleQueryHandler for MiracleDbHandler {
 
 /// Replace `$1`, `$2`, … placeholders with bound parameter values.
 ///
+/// NULL parameters (None) become the SQL keyword `NULL`.
 /// Numeric-looking values (parseable as f64) are substituted unquoted;
 /// everything else is single-quoted with interior `'` escaped as `''`.
-/// Replacements are applied in **reverse index order** so that `$10` is
-/// handled before `$1` when the SQL contains ten or more parameters.
-pub fn substitute_params(sql: &str, params: &[String]) -> String {
+/// Replacements are applied in **reverse index order** and use a capturing
+/// regex that matches `$N` only when not immediately followed by another
+/// digit, preventing `$1` from corrupting `$10`, `$11`, etc.
+pub fn substitute_params(sql: &str, params: &[Option<String>]) -> String {
     let mut result = sql.to_string();
-    // Reverse order prevents $1 matching the leading digits of $10, $11, …
     for (i, value) in params.iter().enumerate().rev() {
-        let placeholder = format!("${}", i + 1);
-        let replacement = if value.parse::<f64>().is_ok() {
-            value.clone()
-        } else {
-            format!("'{}'", value.replace('\'', "''"))
+        // Match `$N` followed by a non-digit or end of string.
+        // Capture the trailing non-digit character (group 1) so we can
+        // re-emit it in the replacement.
+        let placeholder = format!(r"\${}(\D|$)", i + 1);
+        let re = regex::Regex::new(&placeholder).unwrap();
+        let replacement = match value {
+            None => "NULL".to_string(),
+            Some(v) if v.parse::<f64>().is_ok() => v.clone(),
+            Some(v) => format!("'{}'", v.replace('\'', "''")),
         };
-        result = result.replace(&placeholder, &replacement);
+        // $1 in the replacement string refers to the captured trailing character.
+        let repl_with_suffix = format!("{}$1", replacement);
+        result = re.replace_all(&result, repl_with_suffix.as_str()).to_string();
     }
     result
 }
@@ -258,7 +259,7 @@ impl ExtendedQueryHandler for MiracleDbHandler {
     }
 
     /// Execute the portal: extract parameters from the raw bytes, substitute
-    /// them into the SQL, then run via the engine.
+    /// them into the SQL (preserving NULL as SQL NULL), then run via the engine.
     async fn do_query<C>(
         &self,
         _client: &mut C,
@@ -275,69 +276,18 @@ impl ExtendedQueryHandler for MiracleDbHandler {
         C::Error: std::fmt::Debug,
         PgWireError: From<<C as futures::Sink<pgwire::messages::PgWireBackendMessage>>::Error>,
     {
-        // Decode each parameter bytes → UTF-8 string (NULL → empty string)
-        let params: Vec<String> = portal
+        let raw_sql = portal.statement.statement.as_str();
+        let params: Vec<Option<String>> = portal
             .parameters
             .iter()
             .map(|opt| {
                 opt.as_ref()
                     .map(|b| String::from_utf8_lossy(b).into_owned())
-                    .unwrap_or_default()
+                // None stays None — will become SQL NULL
             })
             .collect();
-
-        let raw_sql = &portal.statement.statement;
         let sql = substitute_params(raw_sql, &params);
-        let sql = sql.trim_end_matches(';').trim().to_string();
-
-        let df = self
-            .engine
-            .query(&sql)
-            .await
-            .map_err(|e| PgWireError::ApiError(Box::new(e)))?;
-        let batches = df
-            .collect()
-            .await
-            .map_err(|e| PgWireError::ApiError(Box::new(e)))?;
-
-        if batches.is_empty() {
-            let verb = sql
-                .split_whitespace()
-                .next()
-                .unwrap_or("SELECT")
-                .to_uppercase();
-            return Ok(Response::Execution(Tag::new(&verb)));
-        }
-
-        if batches.iter().all(|b| b.num_rows() == 0) {
-            let schema = batches[0].schema();
-            let fields = Arc::new(schema_to_fields(&schema));
-            let empty_stream = futures::stream::iter(
-                Vec::<PgWireResult<pgwire::messages::data::DataRow>>::new(),
-            );
-            return Ok(Response::Query(QueryResponse::new(fields, empty_stream)));
-        }
-
-        let schema = batches[0].schema();
-        let fields = Arc::new(schema_to_fields(&schema));
-
-        let mut rows: Vec<PgWireResult<pgwire::messages::data::DataRow>> = Vec::new();
-        for batch in &batches {
-            let mut encoder = DataRowEncoder::new(fields.clone());
-            for row_idx in 0..batch.num_rows() {
-                for col_idx in 0..batch.num_columns() {
-                    let text: Option<String> =
-                        arrow_col_to_text(batch.column(col_idx), row_idx);
-                    encoder
-                        .encode_field(&text.as_deref())
-                        .map_err(|e| PgWireError::ApiError(Box::new(e)))?;
-                }
-                rows.push(Ok(encoder.take_row()));
-            }
-        }
-
-        let row_stream = futures::stream::iter(rows);
-        Ok(Response::Query(QueryResponse::new(fields, row_stream)))
+        self.execute_sql(&sql).await
     }
 
     /// Describe a prepared statement: we cannot resolve types without executing,
@@ -568,14 +518,14 @@ mod handler_tests {
     #[test]
     fn test_substitute_no_params() {
         let sql = "SELECT * FROM users";
-        let params: Vec<String> = vec![];
+        let params: Vec<Option<String>> = vec![];
         assert_eq!(substitute_params(sql, &params), "SELECT * FROM users");
     }
 
     #[test]
     fn test_substitute_single_param_integer() {
         let sql = "SELECT * FROM users WHERE id = $1";
-        let params = vec!["42".to_string()];
+        let params = vec![Some("42".to_string())];
         assert_eq!(
             substitute_params(sql, &params),
             "SELECT * FROM users WHERE id = 42"
@@ -585,7 +535,7 @@ mod handler_tests {
     #[test]
     fn test_substitute_multiple_params() {
         let sql = "SELECT * FROM orders WHERE user_id = $1 AND status = $2";
-        let params = vec!["1".to_string(), "completed".to_string()];
+        let params = vec![Some("1".to_string()), Some("completed".to_string())];
         assert_eq!(
             substitute_params(sql, &params),
             "SELECT * FROM orders WHERE user_id = 1 AND status = 'completed'"
@@ -595,7 +545,7 @@ mod handler_tests {
     #[test]
     fn test_substitute_param_out_of_range_leaves_placeholder() {
         let sql = "SELECT $1, $2";
-        let params = vec!["hello".to_string()];
+        let params = vec![Some("hello".to_string())];
         let result = substitute_params(sql, &params);
         assert!(result.contains("$2"), "unresolved placeholder should remain");
     }
@@ -603,7 +553,7 @@ mod handler_tests {
     #[test]
     fn test_substitute_with_quoted_string() {
         let sql = "SELECT * FROM products WHERE name = $1";
-        let params = vec!["Laptop Pro".to_string()];
+        let params = vec![Some("Laptop Pro".to_string())];
         assert_eq!(
             substitute_params(sql, &params),
             "SELECT * FROM products WHERE name = 'Laptop Pro'"
@@ -613,9 +563,25 @@ mod handler_tests {
     #[test]
     fn test_substitute_escapes_single_quote() {
         let sql = "SELECT $1";
-        let params = vec!["it's".to_string()];
+        let params = vec![Some("it's".to_string())];
         let result = substitute_params(sql, &params);
         assert_eq!(result, "SELECT 'it''s'");
+    }
+
+    #[test]
+    fn test_substitute_no_corruption_of_higher_numbered_params() {
+        let sql = "SELECT $1, $10";
+        let params: Vec<Option<String>> = (1..=10).map(|i| Some(i.to_string())).collect();
+        let result = substitute_params(sql, &params);
+        assert_eq!(result, "SELECT 1, 10");
+    }
+
+    #[test]
+    fn test_null_param_becomes_sql_null() {
+        let sql = "SELECT * FROM users WHERE name = $1";
+        let params = vec![None];
+        let result = substitute_params(sql, &params);
+        assert_eq!(result, "SELECT * FROM users WHERE name = NULL");
     }
 }
 
