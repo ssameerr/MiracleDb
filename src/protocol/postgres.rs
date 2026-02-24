@@ -3,14 +3,19 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use bytes::{BytesMut, BufMut};
 use std::sync::Arc;
 
-// ─── pgwire-based handler (Task 2) ───────────────────────────────────────────
+// ─── pgwire-based handler (Task 2 + Task 3) ──────────────────────────────────
 
 use arrow::array::ArrayRef;
 use arrow::datatypes::DataType;
 use pgwire::api::ClientInfo;
-use pgwire::api::query::SimpleQueryHandler;
-use pgwire::api::results::{DataRowEncoder, FieldFormat, FieldInfo, QueryResponse, Response, Tag};
-use pgwire::error::{PgWireError, PgWireResult};
+use pgwire::api::portal::Portal;
+use pgwire::api::query::{ExtendedQueryHandler, SimpleQueryHandler};
+use pgwire::api::results::{
+    DataRowEncoder, DescribePortalResponse, DescribeResponse, DescribeStatementResponse,
+    FieldFormat, FieldInfo, QueryResponse, Response, Tag,
+};
+use pgwire::api::stmt::{NoopQueryParser, StoredStatement};
+use pgwire::error::{ErrorInfo, PgWireError, PgWireResult};
 use crate::engine::MiracleEngine;
 use crate::protocol::type_map::arrow_to_pg_oid;
 
@@ -218,7 +223,150 @@ impl SimpleQueryHandler for MiracleDbHandler {
     }
 }
 
-// ─── end Task 2 ──────────────────────────────────────────────────────────────
+// ─── Task 3: substitute_params + ExtendedQueryHandler ────────────────────────
+
+/// Replace `$1`, `$2`, … placeholders with bound parameter values.
+///
+/// Numeric-looking values (parseable as f64) are substituted unquoted;
+/// everything else is single-quoted with interior `'` escaped as `''`.
+/// Replacements are applied in **reverse index order** so that `$10` is
+/// handled before `$1` when the SQL contains ten or more parameters.
+pub fn substitute_params(sql: &str, params: &[String]) -> String {
+    let mut result = sql.to_string();
+    // Reverse order prevents $1 matching the leading digits of $10, $11, …
+    for (i, value) in params.iter().enumerate().rev() {
+        let placeholder = format!("${}", i + 1);
+        let replacement = if value.parse::<f64>().is_ok() {
+            value.clone()
+        } else {
+            format!("'{}'", value.replace('\'', "''"))
+        };
+        result = result.replace(&placeholder, &replacement);
+    }
+    result
+}
+
+#[async_trait::async_trait]
+impl ExtendedQueryHandler for MiracleDbHandler {
+    /// Use the raw SQL string as the stored statement — `NoopQueryParser`
+    /// just echoes the SQL back, which is all we need.
+    type Statement = String;
+    type QueryParser = NoopQueryParser;
+
+    fn query_parser(&self) -> Arc<Self::QueryParser> {
+        Arc::new(NoopQueryParser::new())
+    }
+
+    /// Execute the portal: extract parameters from the raw bytes, substitute
+    /// them into the SQL, then run via the engine.
+    async fn do_query<C>(
+        &self,
+        _client: &mut C,
+        portal: &Portal<Self::Statement>,
+        _max_rows: usize,
+    ) -> PgWireResult<Response>
+    where
+        C: ClientInfo
+            + pgwire::api::ClientPortalStore
+            + futures::Sink<pgwire::messages::PgWireBackendMessage>
+            + Unpin
+            + Send
+            + Sync,
+        C::Error: std::fmt::Debug,
+        PgWireError: From<<C as futures::Sink<pgwire::messages::PgWireBackendMessage>>::Error>,
+    {
+        // Decode each parameter bytes → UTF-8 string (NULL → empty string)
+        let params: Vec<String> = portal
+            .parameters
+            .iter()
+            .map(|opt| {
+                opt.as_ref()
+                    .map(|b| String::from_utf8_lossy(b).into_owned())
+                    .unwrap_or_default()
+            })
+            .collect();
+
+        let raw_sql = &portal.statement.statement;
+        let sql = substitute_params(raw_sql, &params);
+        let sql = sql.trim_end_matches(';').trim().to_string();
+
+        let df = self
+            .engine
+            .query(&sql)
+            .await
+            .map_err(|e| PgWireError::ApiError(Box::new(e)))?;
+        let batches = df
+            .collect()
+            .await
+            .map_err(|e| PgWireError::ApiError(Box::new(e)))?;
+
+        if batches.is_empty() {
+            let verb = sql
+                .split_whitespace()
+                .next()
+                .unwrap_or("SELECT")
+                .to_uppercase();
+            return Ok(Response::Execution(Tag::new(&verb)));
+        }
+
+        if batches.iter().all(|b| b.num_rows() == 0) {
+            let schema = batches[0].schema();
+            let fields = Arc::new(schema_to_fields(&schema));
+            let empty_stream = futures::stream::iter(
+                Vec::<PgWireResult<pgwire::messages::data::DataRow>>::new(),
+            );
+            return Ok(Response::Query(QueryResponse::new(fields, empty_stream)));
+        }
+
+        let schema = batches[0].schema();
+        let fields = Arc::new(schema_to_fields(&schema));
+
+        let mut rows: Vec<PgWireResult<pgwire::messages::data::DataRow>> = Vec::new();
+        for batch in &batches {
+            let mut encoder = DataRowEncoder::new(fields.clone());
+            for row_idx in 0..batch.num_rows() {
+                for col_idx in 0..batch.num_columns() {
+                    let text: Option<String> =
+                        arrow_col_to_text(batch.column(col_idx), row_idx);
+                    encoder
+                        .encode_field(&text.as_deref())
+                        .map_err(|e| PgWireError::ApiError(Box::new(e)))?;
+                }
+                rows.push(Ok(encoder.take_row()));
+            }
+        }
+
+        let row_stream = futures::stream::iter(rows);
+        Ok(Response::Query(QueryResponse::new(fields, row_stream)))
+    }
+
+    /// Describe a prepared statement: we cannot resolve types without executing,
+    /// so return no-data (psql and JDBC still function correctly without this).
+    async fn do_describe_statement<C>(
+        &self,
+        _client: &mut C,
+        _stmt: &StoredStatement<Self::Statement>,
+    ) -> PgWireResult<DescribeStatementResponse>
+    where
+        C: ClientInfo + Unpin + Send + Sync,
+    {
+        Ok(<DescribeStatementResponse as DescribeResponse>::no_data())
+    }
+
+    /// Describe a portal: same reasoning — return no-data.
+    async fn do_describe_portal<C>(
+        &self,
+        _client: &mut C,
+        _portal: &Portal<Self::Statement>,
+    ) -> PgWireResult<DescribePortalResponse>
+    where
+        C: ClientInfo + Unpin + Send + Sync,
+    {
+        Ok(<DescribePortalResponse as DescribeResponse>::no_data())
+    }
+}
+
+// ─── end Task 3 ──────────────────────────────────────────────────────────────
 
 pub struct PgServer {
     addr: String,
@@ -413,6 +561,61 @@ mod handler_tests {
         let batch = RecordBatch::try_new(schema, vec![arr]).unwrap();
         let text = arrow_col_to_text(batch.column(0), 0);
         assert_eq!(text, Some("hello".to_string()));
+    }
+
+    // ── substitute_params tests ──────────────────────────────────────────────
+
+    #[test]
+    fn test_substitute_no_params() {
+        let sql = "SELECT * FROM users";
+        let params: Vec<String> = vec![];
+        assert_eq!(substitute_params(sql, &params), "SELECT * FROM users");
+    }
+
+    #[test]
+    fn test_substitute_single_param_integer() {
+        let sql = "SELECT * FROM users WHERE id = $1";
+        let params = vec!["42".to_string()];
+        assert_eq!(
+            substitute_params(sql, &params),
+            "SELECT * FROM users WHERE id = 42"
+        );
+    }
+
+    #[test]
+    fn test_substitute_multiple_params() {
+        let sql = "SELECT * FROM orders WHERE user_id = $1 AND status = $2";
+        let params = vec!["1".to_string(), "completed".to_string()];
+        assert_eq!(
+            substitute_params(sql, &params),
+            "SELECT * FROM orders WHERE user_id = 1 AND status = 'completed'"
+        );
+    }
+
+    #[test]
+    fn test_substitute_param_out_of_range_leaves_placeholder() {
+        let sql = "SELECT $1, $2";
+        let params = vec!["hello".to_string()];
+        let result = substitute_params(sql, &params);
+        assert!(result.contains("$2"), "unresolved placeholder should remain");
+    }
+
+    #[test]
+    fn test_substitute_with_quoted_string() {
+        let sql = "SELECT * FROM products WHERE name = $1";
+        let params = vec!["Laptop Pro".to_string()];
+        assert_eq!(
+            substitute_params(sql, &params),
+            "SELECT * FROM products WHERE name = 'Laptop Pro'"
+        );
+    }
+
+    #[test]
+    fn test_substitute_escapes_single_quote() {
+        let sql = "SELECT $1";
+        let params = vec!["it's".to_string()];
+        let result = substitute_params(sql, &params);
+        assert_eq!(result, "SELECT 'it''s'");
     }
 }
 
