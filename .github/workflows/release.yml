@@ -49,12 +49,22 @@ jobs:
         if: matrix.os == 'ubuntu-latest' && !matrix.cross
         run: sudo apt-get update && sudo apt-get install -y libssl-dev pkg-config protobuf-compiler
 
-      - name: Install protoc (macOS / Windows)
-        if: matrix.os != 'ubuntu-latest'
-        uses: arduino/setup-protoc@v3
-        with:
-          version: "3.21.12"
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install protoc 3.21.12 (macOS)
+        if: matrix.os == 'macos-latest'
+        run: |
+          ARCH=$(uname -m)
+          if [ "$ARCH" = "arm64" ]; then PROTO_ARCH="osx-aarch_64"; else PROTO_ARCH="osx-x86_64"; fi
+          curl -LO https://github.com/protocolbuffers/protobuf/releases/download/v3.21.12/protoc-3.21.12-${PROTO_ARCH}.zip
+          unzip protoc-3.21.12-${PROTO_ARCH}.zip -d $HOME/.local
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Install protoc 3.21.12 (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        run: |
+          curl -LO https://github.com/protocolbuffers/protobuf/releases/download/v3.21.12/protoc-3.21.12-win64.zip
+          unzip protoc-3.21.12-win64.zip -d "$HOME/.local"
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
 
       - name: Install dependencies (Linux cross)
         if: matrix.cross
