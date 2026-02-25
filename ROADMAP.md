@@ -28,7 +28,7 @@ Multi-model Rust database — DataFusion · Lance · Tantivy · Wasmer · Candle
 | Vector Search | Lance embeddings, IVF-PQ indexing | 85% |
 | Geospatial | R-tree index, NN search, spatial filters | 80% |
 | CDC & Integration | Kafka, PostgreSQL logical replication | 75% |
-| PostgreSQL Wire Protocol | Startup handshake, simple queries | 60% |
+| PostgreSQL Wire Protocol | Startup handshake, simple queries | 90% |
 | Distributed / Sharding | Consistent hash ring, query routing | 65% |
 | ML / UDFs | WASM, ONNX, Candle inference | 80% |
 | Time Series | Downsample, gap-fill, lag/lead | 75% |
@@ -183,7 +183,7 @@ Multi-model Rust database — DataFusion · Lance · Tantivy · Wasmer · Candle
 
 ---
 
-### 🔌 PostgreSQL Wire Protocol — 60%
+### 🔌 PostgreSQL Wire Protocol — 90%
 
 | Feature | Status | Notes |
 |---------|--------|-------|
