@@ -87,6 +87,10 @@ jobs:
         if: matrix.cross
         env:
           OPENSSL_NO_VENDOR: "1"
+          # x86_64 headers (from native libssl-dev) for HOST compiler to probe API
+          OPENSSL_INCLUDE_DIR: "/usr/include"
+          # arm64 libs (from libssl-dev:arm64) for TARGET linking
+          OPENSSL_LIB_DIR: "/usr/lib/aarch64-linux-gnu"
         run: cross build --release --target ${{ matrix.target }}
 
       - name: Upload artifact
