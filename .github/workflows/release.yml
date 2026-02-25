@@ -27,7 +27,7 @@ jobs:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             artifact: miracledb-windows-x86_64.exe
-          - os: macos-latest
+          - os: macos-13
             target: x86_64-apple-darwin
             artifact: miracledb-macos-x86_64
           - os: macos-latest
@@ -50,7 +50,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libssl-dev pkg-config protobuf-compiler
 
       - name: Install protoc 3.21.12 (macOS)
-        if: matrix.os == 'macos-latest'
+        if: runner.os == 'macOS'
         run: |
           ARCH=$(uname -m)
           if [ "$ARCH" = "arm64" ]; then PROTO_ARCH="osx-aarch_64"; else PROTO_ARCH="osx-x86_64"; fi
@@ -60,11 +60,11 @@ jobs:
 
       - name: Install protoc 3.21.12 (Windows)
         if: matrix.os == 'windows-latest'
-        shell: bash
         run: |
-          curl -LO https://github.com/protocolbuffers/protobuf/releases/download/v21.12/protoc-21.12-win64.zip
-          unzip protoc-21.12-win64.zip -d "$HOME/.local"
-          echo "$HOME/.local/bin" >> $GITHUB_PATH
+          Invoke-WebRequest -Uri "https://github.com/protocolbuffers/protobuf/releases/download/v21.12/protoc-21.12-win64.zip" -OutFile protoc.zip
+          Expand-Archive -Path protoc.zip -DestinationPath protoc-install
+          $protoc = (Get-Item protoc-install\bin\protoc.exe).FullName
+          echo "PROTOC=$protoc" >> $env:GITHUB_ENV
 
       - name: Install dependencies (Linux cross)
         if: matrix.cross
@@ -82,8 +82,10 @@ jobs:
 
       - name: Build (cross)
         if: matrix.cross
+        env:
+          OPENSSL_NO_VENDOR: "1"
         run: cross build --release --target ${{ matrix.target }}
-      
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -98,7 +100,7 @@ jobs:
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
-        
+
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
