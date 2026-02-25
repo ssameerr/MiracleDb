@@ -49,17 +49,16 @@ jobs:
         if: matrix.os == 'ubuntu-latest' && !matrix.cross
         run: sudo apt-get update && sudo apt-get install -y libssl-dev pkg-config protobuf-compiler
 
-      - name: Install protoc (macOS)
-        if: matrix.os == 'macos-latest'
-        run: brew install protobuf
+      - name: Install protoc (macOS / Windows)
+        if: matrix.os != 'ubuntu-latest'
+        uses: arduino/setup-protoc@v3
+        with:
+          version: "3.21.12"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install dependencies (Linux cross)
         if: matrix.cross
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
-
-      - name: Install protoc (Windows)
-        if: matrix.os == 'windows-latest'
-        run: choco install protoc
 
       - name: Install cross
         if: matrix.cross
