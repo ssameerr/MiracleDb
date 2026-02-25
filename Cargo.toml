@@ -165,7 +165,7 @@ regex = "1.10"
 uuid = { version = "1.8", features = ["v4", "serde", "fast-rng"] }
 
 # Security (JWT)
-jsonwebtoken = "9.3"
+jsonwebtoken = "10.3"
 
 # System Metrics (Autonomous Ops)
 sysinfo = "0.31"
