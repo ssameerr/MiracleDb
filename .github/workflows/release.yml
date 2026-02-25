@@ -54,16 +54,16 @@ jobs:
         run: |
           ARCH=$(uname -m)
           if [ "$ARCH" = "arm64" ]; then PROTO_ARCH="osx-aarch_64"; else PROTO_ARCH="osx-x86_64"; fi
-          curl -LO https://github.com/protocolbuffers/protobuf/releases/download/v3.21.12/protoc-3.21.12-${PROTO_ARCH}.zip
-          unzip protoc-3.21.12-${PROTO_ARCH}.zip -d $HOME/.local
+          curl -LO https://github.com/protocolbuffers/protobuf/releases/download/v21.12/protoc-21.12-${PROTO_ARCH}.zip
+          unzip protoc-21.12-${PROTO_ARCH}.zip -d $HOME/.local
           echo "$HOME/.local/bin" >> $GITHUB_PATH
 
       - name: Install protoc 3.21.12 (Windows)
         if: matrix.os == 'windows-latest'
         shell: bash
         run: |
-          curl -LO https://github.com/protocolbuffers/protobuf/releases/download/v3.21.12/protoc-3.21.12-win64.zip
-          unzip protoc-3.21.12-win64.zip -d "$HOME/.local"
+          curl -LO https://github.com/protocolbuffers/protobuf/releases/download/v21.12/protoc-21.12-win64.zip
+          unzip protoc-21.12-win64.zip -d "$HOME/.local"
           echo "$HOME/.local/bin" >> $GITHUB_PATH
 
       - name: Install dependencies (Linux cross)
