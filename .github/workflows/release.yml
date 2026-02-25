@@ -19,6 +19,7 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-musl
             artifact: miracledb-linux-x86_64
+            cross: true
           - os: ubuntu-latest
             target: aarch64-unknown-linux-musl
             artifact: miracledb-linux-arm64
@@ -32,6 +33,7 @@ jobs:
           - os: macos-latest
             target: aarch64-apple-darwin
             artifact: miracledb-macos-arm64
+            rustflags: "-C target-cpu=apple-m1"
 
     runs-on: ${{ matrix.os }}
     
@@ -43,16 +45,14 @@ jobs:
         with:
           targets: ${{ matrix.target }}
       
-      - name: Install musl tools (Linux)
-        if: contains(matrix.target, 'musl')
-        run: sudo apt-get update && sudo apt-get install -y musl-tools
-      
-      - name: Install cross (ARM64)
+      - name: Install cross
         if: matrix.cross
         run: cargo install cross --git https://github.com/cross-rs/cross
       
       - name: Build (native)
         if: "!matrix.cross"
+        env:
+          RUSTFLAGS: ${{ matrix.rustflags }}
         run: cargo build --release --target ${{ matrix.target }}
       
       - name: Build (cross)
