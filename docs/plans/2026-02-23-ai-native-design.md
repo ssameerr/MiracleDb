@@ -1,7 +1,7 @@
 # AI-Native Features Design
 
 **Date:** 2026-02-23
-**Status:** Approved
+**Status:** Implemented — v0.6 shipped, 344 tests passing
 **Scope:** v0.6 — AI-Native Features (Phase C of the MiracleDb roadmap)
 
 ---

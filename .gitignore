@@ -1,0 +1,47 @@
+# Build output
+/target
+
+# Cargo lock is committed for binaries
+# Cargo.lock
+
+# Logs & transient output
+*.log
+*.log.*
+build_*.log
+check_*.log
+build_errors*.txt
+check_errors*.txt
+check_output*.txt
+heap_test_errors.txt
+test_build_errors.txt
+test_errors.txt
+test_output.log
+wal_error.txt
+release_output.txt
+run_output.txt
+scale_test_output.log
+
+# Runtime data
+/data/
+/token.jwt
+miracledb.toml
+miracledb.log
+
+# Distribution / packaging artifacts
+/dist/
+/distribution/
+/miracle_pkg/
+/miracledb_release.tar.gz
+/miracledb_release.zip
+
+# Generated docs bundles
+docs.zip
+docs.tar
+"docs (2).zip"
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Dev tools
+node_install/

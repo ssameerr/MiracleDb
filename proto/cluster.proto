@@ -1,0 +1,42 @@
+syntax = "proto3";
+
+package cluster;
+
+service ClusterService {
+  rpc RegisterNode (RegisterNodeRequest) returns (RegisterNodeResponse);
+  rpc Heartbeat (HeartbeatRequest) returns (HeartbeatResponse);
+  rpc SubmitTask (SubmitTaskRequest) returns (SubmitTaskResponse);
+}
+
+message RegisterNodeRequest {
+  string node_id = 1;
+  string address = 2;
+  uint32 port = 3;
+}
+
+message RegisterNodeResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message HeartbeatRequest {
+  string node_id = 1;
+  uint64 timestamp = 2;
+  // Metrics
+  double cpu_usage = 3;
+  double memory_usage = 4;
+}
+
+message HeartbeatResponse {
+  bool limit_exceeded = 1;
+}
+
+message SubmitTaskRequest {
+  string task_id = 1;
+  bytes plan = 2; // Serialized LogicalPlan or ExecutionPlan
+}
+
+message SubmitTaskResponse {
+  string job_id = 1;
+  bool accepted = 2;
+}
