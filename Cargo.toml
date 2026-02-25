@@ -4,9 +4,6 @@ version = "0.2.0"
 edition = "2021"
 
 [dependencies]
-# Force vendored OpenSSL so musl/cross builds don't need system headers
-openssl = { version = "0.10", features = ["vendored"] }
-
 # Core Async Runtime
 tokio = { version = "1.40", features = ["full"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
