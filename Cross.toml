@@ -5,5 +5,5 @@ passthrough = ["OPENSSL_NO_VENDOR", "OPENSSL_INCLUDE_DIR", "OPENSSL_LIB_DIR"]
 pre-build = [
   "dpkg --add-architecture arm64 || true",
   "apt-get update",
-  "apt-get install -y libssl-dev libssl-dev:arm64 perl"
+  "apt-get install -y libssl-dev libssl-dev:arm64 perl protobuf-compiler"
 ]
