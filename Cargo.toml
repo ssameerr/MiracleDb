@@ -174,7 +174,7 @@ sysinfo = "0.31"
 slotmap = "1.0"
 
 # Caching
-lru = "0.12"
+lru = "0.16"
 
 # Compression
 zstd = "0.13"
