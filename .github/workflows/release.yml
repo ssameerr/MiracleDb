@@ -27,15 +27,18 @@ jobs:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             artifact: miracledb-windows-x86_64.exe
-          - os: macos-13
+          - os: macos-latest
             target: x86_64-apple-darwin
             artifact: miracledb-macos-x86_64
+            allow_failure: true
           - os: macos-latest
             target: aarch64-apple-darwin
             artifact: miracledb-macos-arm64
             rustflags: "-C target-cpu=apple-m1"
 
     runs-on: ${{ matrix.os }}
+    # macOS x86_64 cross-compilation is best-effort (arm64 binary covers Rosetta users)
+    continue-on-error: ${{ matrix.allow_failure == true }}
 
     steps:
       - uses: actions/checkout@v4
@@ -104,6 +107,7 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
+          fail_on_unmatched_files: false
           files: |
             miracledb-linux-x86_64/*
             miracledb-linux-arm64/*

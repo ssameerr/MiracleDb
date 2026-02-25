@@ -3,5 +3,7 @@ passthrough = ["OPENSSL_NO_VENDOR"]
 
 [target.aarch64-unknown-linux-gnu]
 pre-build = [
-  "dpkg --add-architecture arm64 && apt-get update && apt-get install -y libssl-dev:arm64"
+  "dpkg --add-architecture arm64 || true",
+  "apt-get update",
+  "apt-get install -y libssl-dev:arm64 perl"
 ]
