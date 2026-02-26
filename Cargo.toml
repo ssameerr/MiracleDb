@@ -86,7 +86,7 @@ azure_storage = { version = "0.12", optional = true }
 # Data Adapters
 mysql = "24.0"
 postgres = "0.19"
-mongodb = "2.8"
+mongodb = "3.2"
 
 # NLP
 tokenizers = { version = "0.19", optional = true }
